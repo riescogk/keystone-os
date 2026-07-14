@@ -11,6 +11,23 @@ Running record of security decisions and open risks. Governed by Company Bible S
 - **Generic authentication failure messaging.** The login form never reveals whether a given email has an account (PRD Section 8.1, Section 26) — it relies on Supabase's own generic "Invalid login credentials" error rather than a custom message that could leak that information.
 - **No cross-account data access is possible in Phase 2's data model** — the only table (`users`) has a select/update policy scoped to `auth.uid()`, and there is no other table yet that could leak data across accounts.
 
+## Phase 3 additions
+
+- **`public.reports` and the `reports` Storage bucket both enforce ownership via `auth.uid()`** — select/insert/delete on the table, and select/insert/delete on `storage.objects` scoped by the object path's leading `{user_id}` folder. Verified with the two-user test below, not assumed from the policy definitions alone.
+- **The `reports` bucket is private** (`public = false`). The only way to read a file's bytes is a signed URL, generated server-side, expiring in 60 seconds, and only after the caller's ownership of the corresponding database row has been confirmed via RLS.
+- **No `user_id` is ever accepted from the client.** Every server action (`uploadReport`, `getSignedReportUrl`, `deleteReport`) derives the acting user exclusively from `supabase.auth.getUser()` inside the action itself.
+- **File type is verified against actual file bytes** (PDF magic number), not just the browser-reported MIME type, closing the trivial "rename a .exe to .pdf" spoof.
+- **The service-role key is still not used anywhere** — Phase 3 upload/delete/signed-URL all run under the authenticated user's own RLS-scoped session.
+
+### Two-user security test (run this before considering Phase 3 done)
+
+1. Create two accounts (User A, User B) in the deployed/dev app.
+2. As User A: upload a report, note its filename.
+3. As User B: confirm the Dashboard report list does **not** show User A's report.
+4. As User B, attempt to guess/construct a signed URL or call `getSignedReportUrl` with User A's report id (e.g., via browser dev tools if you want to simulate a malicious client) — confirm it returns an error, not a URL.
+5. As User B, attempt to call `deleteReport` with User A's report id — confirm it returns "Report not found," and confirm afterward (as User A) that the report still exists.
+6. In the Supabase Dashboard, confirm `storage.objects` for the `reports` bucket shows each file only under its owner's `{user_id}/` folder.
+
 ## Open risks / explicitly deferred (not yet resolved, tracked here so they aren't forgotten)
 
 - **Account/data deletion (PRD Section 8.9) is not built yet.** A user cannot currently self-delete their account. This must be built before real customer data is stored, not treated as a nice-to-have.

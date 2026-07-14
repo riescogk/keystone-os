@@ -7,9 +7,8 @@ interface NavbarProps {
 
 /**
  * Persistent primary navigation for the authenticated area of the app.
- * Per PRD Section 9: Dashboard, Account Settings, Log out are always
- * reachable from here. "New Review" is intentionally NOT wired to a
- * real route yet — Phase 2 builds no upload/review functionality.
+ * Per PRD Section 9: Dashboard, New Review, Account Settings, Log out
+ * are always reachable from here.
  */
 export function Navbar({ userEmail }: NavbarProps) {
   return (
@@ -28,6 +27,12 @@ export function Navbar({ userEmail }: NavbarProps) {
             className="text-sm font-medium text-slate-600 hover:text-slate-900"
           >
             Dashboard
+          </Link>
+          <Link
+            href="/dashboard/new"
+            className="text-sm font-medium text-slate-600 hover:text-slate-900"
+          >
+            New Review
           </Link>
           <Link
             href="/dashboard/settings"

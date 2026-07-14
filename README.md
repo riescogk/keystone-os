@@ -13,13 +13,9 @@ architecture decision):
 2. `docs/company-bible.md` — Company Bible
 3. `docs/prd-v1.md` — Product Requirements Document v1.0
 
-## Phase 2 — Project Foundation (current)
+## Phase 3 — Secure Report Upload (current)
 
-This phase built: project scaffold, auth (Supabase), a protected
-dashboard shell, navigation, and the `users` table with Row Level
-Security. It intentionally does NOT include report upload, the
-review engine, findings, billing, teams, or notifications — those are
-later phases, per the PRD.
+This phase added: a private Supabase Storage bucket for uploaded PDFs, the `public.reports` table with Row Level Security, a New Review upload page, a real report list on the Dashboard, and per-report Open (signed URL) / Delete actions. It intentionally does NOT include text extraction, the review engine, findings, AI, OCR, billing, teams, exports, or notifications — those are later phases, per the PRD.
 
 ## Local development
 
