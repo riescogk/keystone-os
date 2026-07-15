@@ -7,11 +7,13 @@
 export type ReviewStatus = "pending" | "processing" | "complete" | "failed";
 
 /**
- * Phase 5 implements exactly one category. The full PRD Section 18
- * list has seven; this type (and the DB check constraint in
- * 0005_findings.sql) will grow as later phases add categories.
+ * Phase 5 implemented the first category; Phase 6 adds the second.
+ * The full PRD Section 18 list has seven; this type (and the DB check
+ * constraint in the findings migrations) grows as later phases add
+ * categories.
  */
-export type FindingCategory = "cross_document_identity_consistency";
+export type FindingCategory =
+  "cross_document_identity_consistency" | "template_leftover_detection";
 
 /** PRD Section 19 — fixed, permanent three-level taxonomy. */
 export type FindingSeverity = "critical" | "moderate" | "low";
@@ -29,13 +31,19 @@ export const IN_PROGRESS_REVIEW_STATUSES: readonly ReviewStatus[] = [
 
 /**
  * Bumped whenever the review pipeline's check logic changes in a way
- * that would produce different findings for the same input. Stored
- * per report in `review_version`, analogous to EXTRACTION_VERSION.
+ * that would produce different findings for the same input — either
+ * a change to an existing check, or a new check being added to the
+ * pipeline (as in Phase 6). Stored per report in `review_version`,
+ * analogous to EXTRACTION_VERSION. Older reports keep their original
+ * version string as an honest historical record of which checks
+ * actually ran against them; nothing re-runs automatically when this
+ * bumps.
  */
-export const REVIEW_VERSION = "identity-consistency-v1";
+export const REVIEW_VERSION = "review-pipeline-v2";
 
 export const FINDING_CATEGORY_LABEL: Record<FindingCategory, string> = {
   cross_document_identity_consistency: "Cross-Document Identity Consistency",
+  template_leftover_detection: "Template Leftover Detection",
 };
 
 export const FINDING_SEVERITY_LABEL: Record<FindingSeverity, string> = {
@@ -43,3 +51,18 @@ export const FINDING_SEVERITY_LABEL: Record<FindingSeverity, string> = {
   moderate: "Moderate",
   low: "Low",
 };
+
+/** One page's worth of extracted text, as recovered by splitPagesFromStorage. */
+export interface PageText {
+  pageNumber: number;
+  text: string;
+}
+
+/** A check's proposed finding, before it's given an id/report_id and inserted. */
+export interface FindingDraft {
+  category: FindingCategory;
+  severity: FindingSeverity;
+  description: string;
+  evidence: string;
+  location: string;
+}

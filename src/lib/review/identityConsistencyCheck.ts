@@ -1,17 +1,4 @@
-import type { FindingCategory, FindingSeverity } from "@/lib/review/types";
-
-export interface PageText {
-  pageNumber: number;
-  text: string;
-}
-
-export interface FindingDraft {
-  category: FindingCategory;
-  severity: FindingSeverity;
-  description: string;
-  evidence: string;
-  location: string;
-}
+import type { PageText, FindingDraft } from "@/lib/review/types";
 
 interface IdentityField {
   key: "client_name" | "property_address" | "effective_date";

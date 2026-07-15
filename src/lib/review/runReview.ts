@@ -1,12 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
 import { splitPagesFromStorage } from "@/lib/extraction/pdfTextExtractor";
 import { checkCrossDocumentIdentityConsistency } from "@/lib/review/identityConsistencyCheck";
+import { checkTemplateLeftovers } from "@/lib/review/templateLeftoverCheck";
 import { REVIEW_VERSION } from "@/lib/review/types";
 
 /**
- * Runs the Phase 5 deterministic review checks for a single report
- * and writes any resulting findings, then marks the report's review
- * as complete.
+ * Runs every deterministic review check registered so far (Phase 5:
+ * cross-document identity consistency; Phase 6: template leftover
+ * detection) for a single report, writes any resulting findings, then
+ * marks the report's review as complete. Adding a future check means
+ * adding one more entry to the array below — this function's
+ * lifecycle/idempotency/error-handling logic doesn't change.
  *
  * Called from runExtraction.ts immediately after extraction succeeds
  * — review has a hard dependency on extracted text, so it makes sense
@@ -66,7 +70,10 @@ export async function runReview(reportId: string): Promise<void> {
 
   try {
     const pages = splitPagesFromStorage(report.extracted_text);
-    const findingDrafts = checkCrossDocumentIdentityConsistency(pages);
+    const findingDrafts = [
+      ...checkCrossDocumentIdentityConsistency(pages),
+      ...checkTemplateLeftovers(pages),
+    ];
 
     if (findingDrafts.length > 0) {
       const { error: insertError } = await supabase.from("findings").insert(
