@@ -38,3 +38,34 @@ Per the founder's explicit Phase 2 instruction: no PDF upload, no review engine,
 ## What Phase 3 deliberately does not include
 
 Per the founder's explicit Phase 3 instruction: no text extraction, no review engine, no findings, no AI, no OCR, no billing, no teams, no exports, no notifications. The `reports` table intentionally has no `status`/lifecycle column yet — PRD Section 15's full Report Lifecycle (Processing/Reviewed/Superseded) is a later phase; "deleted" in Phase 3 is represented by row removal, not a status flag.
+
+## Phase 4 — PDF Text Extraction
+
+### Library choice: `unpdf`
+
+Evaluated against `pdf-parse`, `pdfjs-dist` (direct), and `pdf.js-extract` for: extraction accuracy, TypeScript support, performance, maintenance, production readiness, reading-order preservation, and large-document handling (commercial appraisal reports run 50–300 pages, narrative-heavy, occasionally scanned).
+
+`unpdf` was chosen because:
+
+1. It wraps `pdfjs-dist` (Mozilla's own engine — the most battle-tested for reading-order-correct text extraction), while shipping a serverless-safe build out of the box, avoiding the need to hand-roll one for Vercel's runtime.
+2. Its `extractText(pdf, { mergePages: false })` API returns text **per page**, which is exactly what "preserve page order" requires, and gives future phases (rule engine, findings) a page-indexed foundation to cite against without re-architecting the extractor.
+3. "No selectable text" (the OCR-required signal) falls directly out of this API with no extra dependency: if every page's extracted string is empty/whitespace, the PDF has no text layer.
+4. No native binaries — keeps Vercel deployment as simple as every prior phase.
+
+`unpdf` does not perform OCR, which matches this phase's explicit boundary: a scanned page yields no text, which is detected and surfaced as `ocr_required`, never silently guessed at.
+
+### Design
+
+1. **Three-file separation, matching the existing separation-of-concerns pattern** (compare to the three Supabase client factories):
+   - `src/lib/extraction/types.ts` — `ExtractionStatus` type, `EXTRACTION_VERSION`, no dependencies. Safe to import from client components (e.g. the status badge).
+   - `src/lib/extraction/pdfTextExtractor.ts` — pure function, PDF bytes in, `{ pageCount, pages, hasSelectableText }` out. No Supabase, no report ids. Independently testable; the only file that changes if the underlying library is ever swapped.
+   - `src/lib/extraction/runExtraction.ts` — the orchestrator (`runTextExtraction(reportId)`): loads the row, downloads the file from Storage, calls the pure extractor, writes the result back. This is the only file that knows a report id exists.
+2. **Upload never waits on extraction.** `uploadReport` schedules `runTextExtraction` via Next.js's `after()` (stable in the installed Next 16), which runs after the response is already sent. This introduces no new infrastructure (no queue, no cron, no external worker) while still meeting the "upload should never wait for extraction" requirement.
+3. **Designed for a trigger swap, not a rewrite.** `runTextExtraction(reportId)` takes only a report id and knows nothing about _how_ it was invoked. A future phase can replace the single `after(() => runTextExtraction(reportId))` call with a queue enqueue, a Supabase Edge Function invocation, or a cron sweep over `extraction_status = 'pending'` rows — `runTextExtraction` itself does not need to change for any of those.
+4. **Idempotency guard.** `runTextExtraction` re-checks `extraction_status` and returns early unless it's still `'pending'`, so a duplicate trigger (e.g. a future retry mechanism, or `after()` firing twice under a platform edge case) can't clobber a result or double-run the (currently synchronous, in-request-lifetime) extraction work.
+5. **RLS extended, not bypassed.** Extraction runs as the uploading user's own session (the same `createClient()` used everywhere else) — no service-role key was introduced. This required adding the first UPDATE policy on `public.reports` (see migration `0004_report_extraction.sql`), scoped identically to the existing select/insert/delete policies. This does not weaken the Manifesto's "uploaded report is never modified" guarantee: the uploaded PDF file itself is still never touched; only new metadata columns describing the (unchanged) file are written.
+6. **Single-column storage for extracted text**, not a per-page table. `extracted_text` stores the full document with `--- Page N ---` delimiters preserving order and page attribution as plain text. A structured per-page table was deliberately not introduced — nothing in this phase needs to query or cite individual pages yet (that's the review engine's job, a later phase), and adding one now would be exactly the kind of "before there are more than N screens/features" overengineering the Company Bible (0.5) warns against.
+
+## What Phase 4 deliberately does not include
+
+Per the founder's explicit Phase 4 instruction: no OCR, no AI review, no rule engine, no findings, no report summary, no chat, no embeddings, no vector database, no search, no AI analysis, no review suggestions. `extraction_status` is a distinct, earlier lifecycle from the future Review Lifecycle (PRD Section 16) — it only describes whether text was successfully pulled out of the PDF, not whether the report has been reviewed. There is also no retry action for `failed` extractions yet; today the only recovery path is deleting and re-uploading the report.

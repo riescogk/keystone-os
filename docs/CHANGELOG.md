@@ -36,3 +36,19 @@
 
 - Text extraction, review engine, findings, AI, OCR, billing, teams, exports, notifications.
 - Any report status/lifecycle beyond "exists" or "deleted" (row presence/absence).
+
+## Phase 4 — PDF Text Extraction
+
+**Shipped:**
+
+- `unpdf`-based text extraction pipeline: `src/lib/extraction/{types.ts,pdfTextExtractor.ts,runExtraction.ts}`.
+- Migration `0004_report_extraction.sql`: adds `extraction_status`, `extracted_text`, `page_count`, `extraction_completed_at`, `extraction_version` to `public.reports`, plus the table's first UPDATE Row Level Security policy (scoped identically to the existing owner-only policies).
+- `uploadReport` now schedules extraction via Next.js `after()` immediately after the row insert, so the upload response never waits on it.
+- Extraction lifecycle: `pending` → `processing` → one of `completed` / `ocr_required` / `failed`. A document with zero selectable text anywhere is marked `ocr_required` rather than guessed at; OCR itself is not implemented (by design, per Phase 4 instruction).
+- Dashboard: `ExtractionStatusBadge` shows each report's status; `ReportRow` polls (every 4s, client-side) while a report is `pending`/`processing`, stopping automatically once it reaches a terminal state.
+
+**Explicitly not shipped (by design, per Phase 4 instruction):**
+
+- OCR, AI review, rule engine, findings, report summary, chat, embeddings, vector database, search, AI analysis, review suggestions.
+- A retry action for `failed` extractions — today the only recovery path is deleting and re-uploading the report.
+- A structured per-page storage table — `extracted_text` stores the full document as one delimited string (`--- Page N ---`), sufficient for this phase's scope.
