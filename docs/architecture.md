@@ -69,3 +69,30 @@ Evaluated against `pdf-parse`, `pdfjs-dist` (direct), and `pdf.js-extract` for: 
 ## What Phase 4 deliberately does not include
 
 Per the founder's explicit Phase 4 instruction: no OCR, no AI review, no rule engine, no findings, no report summary, no chat, no embeddings, no vector database, no search, no AI analysis, no review suggestions. `extraction_status` is a distinct, earlier lifecycle from the future Review Lifecycle (PRD Section 16) — it only describes whether text was successfully pulled out of the PDF, not whether the report has been reviewed. There is also no retry action for `failed` extractions yet; today the only recovery path is deleting and re-uploading the report.
+
+## Phase 5 — First Automated Review Check: Cross-Document Identity Consistency
+
+### Scope decision
+
+The project documentation (PRD, Company Bible) describes the full MVP review engine (all seven categories in Section 18, both deterministic and model-based workflows) but does not itself number engineering milestones — Company Bible Section 14 explicitly says "engineering sequencing comes in later phases," i.e. sequencing is a founder decision made per-phase, not a fixed spec. Phase 5 was scoped to the smallest slice that is a complete, working vertical end-to-end (matching the shape of every prior phase): **one deterministic review category (PRD Section 18, category 1 — cross-document identity consistency), the findings data model, and finding triage (FR-4)**, with the report detail/findings UI (PRD 8.5/8.6, minimal).
+
+Deliberately excluded from Phase 5, left for later phases:
+
+- The remaining six PRD Section 18 categories (template leftovers, arithmetic verification, narrative-to-data contradiction, missing assumptions, missing supporting documentation, typo detection).
+- Anything from the AI Review Workflow (PRD Section 13) — no LLM provider has been chosen yet (Company Bible Section "22/24/25" notes this explicitly), and building a model-based check without one would mean guessing at an integration that doesn't exist.
+- Excel grid parsing (Company Bible Long-Term Roadmap item 3).
+- Re-review/diff against a prior run (FR-5, PRD Section 8.7, Findings Lifecycle's "Carried Forward"/"Resolved" states).
+- Export (FR-6).
+
+### Design
+
+1. **Same three-file separation as extraction** (`src/lib/review/{types.ts,identityConsistencyCheck.ts,runReview.ts}`): a dependency-free types file, a pure check function (document text in, finding drafts out — no Supabase, no report id), and an orchestrator that's the only file aware of report ids and the database.
+2. **Chained onto extraction, not separately triggered.** `runTextExtraction` calls `runReview` directly (not via another `after()`) immediately after marking extraction `completed`, since review has a hard dependency on extracted text and both stages already run inside the same background execution scheduled by the upload action's `after()` call. A report whose extraction is `ocr_required` or `failed` has nothing to review; `review_status` simply stays `pending` rather than the codebase inventing a state the PRD doesn't define — a future OCR phase would be the natural place to unblock this.
+3. **Deterministic, pattern-based extraction — not an LLM, not a general-purpose NER model.** The Company Bible explicitly names "report format diversity" as a real, named engineering risk (Sections 20/21): a general "extract the client name from page 1" parser is genuinely hard given how much commercial appraisal report templates vary. Phase 5's check looks for common labeled-field conventions (`Client:`, `Prepared For:`, `Property Address:`, `Effective Date:`, etc.) line-by-line across every page, normalizes values (whitespace/case for all fields; address-abbreviation normalization for addresses; multiple date-format parsing for dates), and only flags a field when two or more _distinct_ normalized values are found. A field with zero or one occurrence produces no finding — the check does not claim to detect _missing_ fields (that's category 5, model-based, explicitly out of scope) — and a document using conventions the patterns don't recognize is simply not checked for that field, rather than producing an unreliable guess.
+4. **Findings share one schema with the future AI workflow**, per PRD Section 14 point 4: `category`, `severity`, `confidence`, `description`, `evidence`, `location` are generic enough that a future model-based check (Section 13) writes to the same `findings` table without a schema change — only `confidence = 'model_based'` rows would be new, and the `confidence` check constraint already allows that value (Section 20 defines it as a fixed, permanent two-value taxonomy, unlike categories, which are expected to grow and are deliberately scoped tightly for now).
+5. **Triage (FR-4) reuses the reports actions pattern exactly**: `src/lib/findings/actions.ts` mirrors `src/lib/reports/actions.ts` — Server Actions, ownership via RLS (never re-checked in application code beyond confirming the update affected a row), `revalidatePath` after mutation. Dismissal requires a non-empty reason both in the UI and via a DB check constraint (`findings_dismissed_reason_required_check`), so a dismissal can never lose its reason even via a direct API/SQL client bypassing the UI.
+6. **RLS extended following the exact same pattern as Phase 4**: `findings` gets select/insert/update policies scoped to `user_id = auth.uid()` (denormalized directly onto the row, matching `reports.user_id`, so RLS doesn't need to join through `reports`). No delete policy — individual findings are only ever removed as a cascade side effect of deleting the parent report.
+
+## What Phase 5 deliberately does not include
+
+Per the scope decision above: the six remaining PRD Section 18 review categories, any AI/model-based check (Section 13), Excel grid parsing, re-review/diff comparison (FR-5, Section 8.7), export (FR-6), and a numeric confidence score (explicitly rejected by PRD Section 20 for any phase, not just this one). There is also no manual "run review again" action — review runs automatically exactly once per report, immediately after extraction succeeds.

@@ -45,11 +45,40 @@ One row per uploaded PDF. The uploaded file itself is immutable; Phase 4 adds co
 | `page_count`              | `integer`       | Phase 4. Read from the PDF document itself, independent of whether pages had selectable text. Populated for `completed` and `ocr_required`.                                               |
 | `extraction_completed_at` | `timestamptz`   | Phase 4. Set when extraction reaches any terminal state (`completed`, `ocr_required`, `failed`).                                                                                          |
 | `extraction_version`      | `text`          | Phase 4. Identifies which pipeline version produced the result (`src/lib/extraction/types.ts`), so a future pipeline change can find and reprocess reports extracted by an older version. |
+| `review_status`           | `text`          | Phase 5. One of `pending` \| `processing` \| `complete` \| `failed`. Defaults to `pending`. Only advances once `extraction_status = 'completed'`.                                         |
+| `review_completed_at`     | `timestamptz`   | Phase 5. Set when review reaches a terminal state (`complete` or `failed`).                                                                                                               |
+| `review_version`          | `text`          | Phase 5. Identifies which pipeline version produced this report's findings (`src/lib/review/types.ts`).                                                                                   |
 
 ### Row Level Security
 
 - **Select / Insert / Delete:** scoped to `user_id = auth.uid()`.
 - **Update (added Phase 4):** scoped identically — `user_id = auth.uid()`. Added specifically so the text-extraction pipeline can write its result back to the row it created; nothing about the originally uploaded file is ever mutated.
+
+## `public.findings` (Phase 5)
+
+One row per finding produced by the review pipeline. Currently only produces `category = 'cross_document_identity_consistency'`, `confidence = 'deterministic'` rows — see `docs/architecture.md` Phase 5 for why the remaining PRD Section 18 categories and any model-based (AI) findings are later phases.
+
+| Column             | Type          | Notes                                                                                                                                           |
+| ------------------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`               | `uuid` (PK)   | `gen_random_uuid()` default.                                                                                                                    |
+| `report_id`        | `uuid`        | References `public.reports(id)`, `on delete cascade`.                                                                                           |
+| `user_id`          | `uuid`        | Denormalized from `reports.user_id` so RLS doesn't need to join through `reports`. References `public.users(id)`, `on delete cascade`.          |
+| `category`         | `text`        | Check-constrained to only categories this phase implements (`cross_document_identity_consistency`); extended via migration as new ones ship.    |
+| `severity`         | `text`        | One of `critical` \| `moderate` \| `low` (PRD Section 19 — fixed, permanent three-level taxonomy).                                              |
+| `confidence`       | `text`        | One of `deterministic` \| `model_based` (PRD Section 20 — fixed, permanent two-level taxonomy). This phase only ever writes `deterministic`.    |
+| `status`           | `text`        | One of `open` (default) \| `acknowledged` \| `dismissed`. `carried_forward`/`resolved` (PRD Section 17) apply only on re-review, not built yet. |
+| `description`      | `text`        | Human-readable finding description.                                                                                                             |
+| `evidence`         | `text`        | The specific values compared, with page references, so the user can verify directly against their own document (PRD Section 14 point 4).        |
+| `location`         | `text`        | Human-readable page reference(s), e.g. `"Page 1, Page 92"`. Free text, not a structured array — no per-page structured storage exists yet.      |
+| `dismissed_reason` | `text`        | Required (DB-enforced) when `status = 'dismissed'` (FR-4).                                                                                      |
+| `acknowledged_at`  | `timestamptz` | Set when the user acknowledges the finding.                                                                                                     |
+| `dismissed_at`     | `timestamptz` | Set when the user dismisses the finding.                                                                                                        |
+| `created_at`       | `timestamptz` | Defaults to `now()`.                                                                                                                            |
+
+### Row Level Security
+
+- **Select / Insert / Update:** scoped to `user_id = auth.uid()`, same ownership model as every other table. Insert is included because the review pipeline writes findings using the report owner's own session (no service-role key).
+- **No delete policy** — individual findings are only ever removed as a side effect of deleting the parent report (`on delete cascade`).
 
 ## Storage: `reports` bucket (Phase 3)
 

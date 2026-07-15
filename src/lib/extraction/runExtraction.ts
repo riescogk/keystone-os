@@ -5,10 +5,13 @@ import {
   joinPagesForStorage,
 } from "@/lib/extraction/pdfTextExtractor";
 import { EXTRACTION_VERSION } from "@/lib/extraction/types";
+import { runReview } from "@/lib/review/runReview";
 
 /**
  * Runs text extraction for a single report and writes the outcome
- * back to its row.
+ * back to its row. On success, also kicks off the review pipeline
+ * (Phase 5's runReview), since review can't start until extraction
+ * has produced text.
  *
  * This function is intentionally the ONLY place that knows how a
  * report goes from "just uploaded" to "text extracted" — it does not
@@ -96,6 +99,13 @@ export async function runTextExtraction(reportId: string): Promise<void> {
       extraction_completed_at: new Date().toISOString(),
       extraction_version: EXTRACTION_VERSION,
     });
+
+    // Review (Phase 5) has a hard dependency on extracted text, so it
+    // runs as the next stage of this same background pipeline rather
+    // than needing its own separate trigger. Called directly (not via
+    // another after()) since we're already inside the deferred
+    // execution scheduled by the upload action's after() call.
+    await runReview(reportId);
   } catch (error) {
     console.error(
       `[extraction] Extraction failed for report ${reportId}:`,

@@ -1,15 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { getSignedReportUrl, deleteReport } from "@/lib/reports/actions";
 import { formatFileSize } from "@/lib/reports/validation";
 import { ExtractionStatusBadge } from "@/components/reports/ExtractionStatusBadge";
+import { ReviewStatusBadge } from "@/components/reports/ReviewStatusBadge";
 import {
   IN_PROGRESS_STATUSES,
   type ExtractionStatus,
 } from "@/lib/extraction/types";
+import {
+  IN_PROGRESS_REVIEW_STATUSES,
+  type ReviewStatus,
+} from "@/lib/review/types";
 
 interface ReportRowProps {
   id: string;
@@ -17,9 +23,10 @@ interface ReportRowProps {
   fileSizeBytes: number;
   createdAt: string;
   extractionStatus: ExtractionStatus;
+  reviewStatus: ReviewStatus;
 }
 
-const EXTRACTION_POLL_INTERVAL_MS = 4000;
+const POLL_INTERVAL_MS = 4000;
 
 export function ReportRow({
   id,
@@ -27,6 +34,7 @@ export function ReportRow({
   fileSizeBytes,
   createdAt,
   extractionStatus,
+  reviewStatus,
 }: ReportRowProps) {
   const router = useRouter();
   const [isOpening, setIsOpening] = useState(false);
@@ -34,20 +42,26 @@ export function ReportRow({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Extraction runs in the background after upload (see
-  // src/lib/reports/actions.ts). While a report is still
-  // pending/processing, refresh this Server Component's data
-  // periodically so the badge updates without a manual page reload.
-  // Stops as soon as the status leaves the in-progress set.
+  // Extraction and review both run in the background after upload
+  // (see src/lib/reports/actions.ts and src/lib/extraction/
+  // runExtraction.ts). While either is still in progress, refresh
+  // this Server Component's data periodically so both badges update
+  // without a manual page reload. Stops once both reach a terminal
+  // state.
   useEffect(() => {
-    if (!IN_PROGRESS_STATUSES.includes(extractionStatus)) {
+    const stillInProgress =
+      IN_PROGRESS_STATUSES.includes(extractionStatus) ||
+      (extractionStatus === "completed" &&
+        IN_PROGRESS_REVIEW_STATUSES.includes(reviewStatus));
+
+    if (!stillInProgress) {
       return;
     }
     const intervalId = setInterval(() => {
       router.refresh();
-    }, EXTRACTION_POLL_INTERVAL_MS);
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [extractionStatus, router]);
+  }, [extractionStatus, reviewStatus, router]);
 
   async function handleOpen() {
     setError(null);
@@ -83,6 +97,9 @@ export function ReportRow({
             {originalFilename}
           </p>
           <ExtractionStatusBadge status={extractionStatus} />
+          {extractionStatus === "completed" && (
+            <ReviewStatusBadge status={reviewStatus} />
+          )}
         </div>
         <p className="text-xs text-slate-500">
           {formatFileSize(fileSizeBytes)} ·{" "}
@@ -96,6 +113,12 @@ export function ReportRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
+        <Link
+          href={`/dashboard/reports/${id}`}
+          className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
+        >
+          Details
+        </Link>
         <Button variant="secondary" onClick={handleOpen} isLoading={isOpening}>
           Open
         </Button>

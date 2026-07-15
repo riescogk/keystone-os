@@ -56,3 +56,36 @@ export function joinPagesForStorage(pages: string[]): string {
     .map((pageText, index) => `--- Page ${index + 1} ---\n${pageText.trim()}`)
     .join("\n\n");
 }
+
+const PAGE_DELIMITER_PATTERN = /--- Page (\d+) ---\n/g;
+
+/**
+ * Inverse of joinPagesForStorage: recovers per-page text (with page
+ * numbers) from the single delimited string stored in
+ * `reports.extracted_text`. Used by the review pipeline (Phase 5),
+ * which needs to know which page a finding's evidence came from.
+ *
+ * Deliberately tolerant: if the text doesn't contain any recognizable
+ * delimiters (e.g. it predates this format, or was hand-edited), the
+ * whole string is returned as a single unnumbered "page" rather than
+ * throwing, since a review check should degrade gracefully rather
+ * than fail outright over a formatting mismatch.
+ */
+export function splitPagesFromStorage(
+  extractedText: string
+): { pageNumber: number; text: string }[] {
+  const matches = [...extractedText.matchAll(PAGE_DELIMITER_PATTERN)];
+
+  if (matches.length === 0) {
+    return [{ pageNumber: 1, text: extractedText.trim() }];
+  }
+
+  return matches.map((match, index) => {
+    const start = match.index! + match[0].length;
+    const end = matches[index + 1]?.index ?? extractedText.length;
+    return {
+      pageNumber: Number(match[1]),
+      text: extractedText.slice(start, end).trim(),
+    };
+  });
+}
