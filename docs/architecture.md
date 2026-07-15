@@ -117,3 +117,25 @@ Same situation as Phase 5: no fixed spec exists for "Phase 6." PRD Section 18 ca
 ## What Phase 6 deliberately does not include
 
 Categories 3 (arithmetic verification — deferred to when Excel ingestion exists), 4–5 (both model-based, blocked on an LLM provider decision), 6 (paired with future grid-parsing work), and 7 (typos, judged lower-priority). No re-review/diff, export, or manual re-run action — same deferred list as Phase 5.
+
+## Phase 7 — Third Automated Review Check: Typo & Formatting Inconsistency Detection
+
+### Scope decision
+
+Same situation as Phases 5 and 6: no fixed spec exists for "Phase 7." PRD Section 18 category 7 was next because, of the four categories still unbuilt after Phase 6, it's the only one left with no unmet dependency — category 3 wants Excel ingestion first, categories 4–5 need an LLM provider decision that hasn't been made, and category 6 is more naturally paired with category 3's future work.
+
+### Design
+
+1. **Same shape as Phases 5/6**: `src/lib/review/typoFormattingCheck.ts` — pure function, pages in, `FindingDraft[]` out, added as one more entry in `runReview.ts`'s check list.
+2. **Deliberately not a dictionary-based spellchecker.** A generic English wordlist would flag enormous numbers of legitimate proper nouns, addresses, and financial/legal jargon that are completely normal in a commercial appraisal report — producing exactly the kind of unreliable, noisy output the Manifesto (0.2) warns against, and especially self-defeating for a category whose entire point is document _credibility_. Instead, this check looks only for patterns that are reliable typo/formatting signals **regardless of subject matter**: an accidentally doubled word (`"the the"`), doubled punctuation (`"??"`, `"!!"`), and a double period (`".."`) that isn't part of a `"..."` ellipsis.
+3. **Severity default: `low`**, per PRD Section 19's explicit statement that typos/formatting/non-substantive boilerplate are "cosmetic/credibility issues" — the only category in Section 18 with an explicit default given in Section 19's text.
+4. **Same anti-duplication/grouping approach as Phase 6**: patterns tried per line, a claimed line skips the rest, repeated occurrences of the same value group into one finding. One known consequence, same tradeoff Phase 6 made: if a single line contains two _different_ kinds of issues (e.g. both "??" and "!!"), only the first-matching pattern is reported for that line — accepted for consistency and simplicity rather than building per-line multi-match logic for a Low-severity category.
+5. **Schema change was the same minimal pattern**: migration `0007_typo_formatting_findings.sql` only extends `findings_category_check` — no other schema/RLS/UI change needed, again confirming the Phase 5 "shared findings schema" design.
+6. **`REVIEW_VERSION` bumped** (`review-pipeline-v2` → `review-pipeline-v3`) for the same reason as Phase 6's bump: the pipeline's output for identical input has changed.
+
+## What Phase 7 deliberately does not include
+
+- A dictionary/spellchecker-based approach (see design note above) — the false-positive risk against proper nouns and jargon was judged worse than the value of the additional catches it would provide.
+- Categories 3–6, for the same reasons as Phase 6 (Excel-ingestion and LLM-provider dependencies still unmet).
+- Multi-issue-per-line detection — a line is claimed by its first-matching pattern only.
+- Re-review/diff, export, or a manual re-run action — same deferred list as every prior review phase.

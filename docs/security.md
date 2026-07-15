@@ -55,6 +55,10 @@ Repeat the Phase 3 two-user test, extended to findings:
 
 No new security surface. Template leftover detection reuses the exact same `findings` table, RLS policies, and orchestrator (`runReview.ts`) introduced in Phase 5 — the only change was extending the `category` check constraint (migration `0006_template_leftover_findings.sql`) to allow one more value. No new tables, no new endpoints, no new client-reachable code path.
 
+## Phase 7
+
+Same as Phase 6: no new security surface. Typo/formatting detection reuses the identical `findings` table, RLS, and orchestrator; the only change is extending the `category` check constraint again (migration `0007_typo_formatting_findings.sql`).
+
 ## Open risks / explicitly deferred (not yet resolved, tracked here so they aren't forgotten)
 
 - **Account/data deletion (PRD Section 8.9) is not built yet.** A user cannot currently self-delete their account. This must be built before real customer data is stored, not treated as a nice-to-have.

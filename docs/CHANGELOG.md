@@ -88,3 +88,20 @@
 - Categories 4–5 (model-based) — still blocked on an LLM provider decision.
 - Category 6 — more naturally paired with category 3's future grid-parsing work.
 - Category 7 (typo detection) — judged lower priority than leftovers for now.
+
+## Phase 7 — Third Automated Review Check: Typo & Formatting Inconsistency Detection
+
+**Shipped:**
+
+- Deterministic typo/formatting check (`src/lib/review/typoFormattingCheck.ts`, PRD Section 18 category 7, Low severity by default per PRD Section 19): detects accidentally doubled words (`"the the"`), doubled punctuation (`"??"`, `"!!"`, etc.), and double periods (`".."`) that aren't part of a `"..."` ellipsis. Deliberately **not** a dictionary-based spellchecker — a generic wordlist would flag huge numbers of legitimate proper nouns, addresses, and financial/legal jargon, producing exactly the kind of noisy output that would undermine the category's own purpose (document credibility).
+- `runReview.ts` now runs a third check — again, zero orchestrator changes required.
+- Migration `0007_typo_formatting_findings.sql`: extends `findings.category`'s check constraint — the only schema change needed.
+- `REVIEW_VERSION` bumped (`review-pipeline-v2` → `review-pipeline-v3`).
+- No UI changes needed, same as Phase 6.
+
+**Explicitly not shipped (by design — see `docs/architecture.md` Phase 7 "Scope decision"):**
+
+- A dictionary/spellchecker-based approach — judged too high false-positive risk against real appraisal-report vocabulary.
+- Categories 3–6 — still blocked on Excel ingestion (3, 6) or an LLM provider decision (4–5).
+- Multi-issue-per-line detection within this check — a line is claimed by its first-matching pattern only, same tradeoff as Phase 6.
+- Re-review/diff, export, or a manual re-run action.
