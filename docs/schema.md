@@ -54,26 +54,26 @@ One row per uploaded PDF. The uploaded file itself is immutable; Phase 4 adds co
 - **Select / Insert / Delete:** scoped to `user_id = auth.uid()`.
 - **Update (added Phase 4):** scoped identically — `user_id = auth.uid()`. Added specifically so the text-extraction pipeline can write its result back to the row it created; nothing about the originally uploaded file is ever mutated.
 
-## `public.findings` (Phase 5, extended Phase 6)
+## `public.findings` (Phase 5, extended Phase 6, Phase 7)
 
-One row per finding produced by the review pipeline. Currently produces `category = 'cross_document_identity_consistency'` (Phase 5) and `category = 'template_leftover_detection'` (Phase 6) rows, both `confidence = 'deterministic'` — see `docs/architecture.md` Phase 5/6 for why the remaining PRD Section 18 categories and any model-based (AI) findings are later phases.
+One row per finding produced by the review pipeline. Currently produces `category = 'cross_document_identity_consistency'` (Phase 5), `template_leftover_detection` (Phase 6), and `typo_and_formatting_inconsistency` (Phase 7) rows, all `confidence = 'deterministic'` — see `docs/architecture.md` Phase 5/6/7 for why the remaining PRD Section 18 categories and any model-based (AI) findings are later phases.
 
-| Column             | Type          | Notes                                                                                                                                                               |
-| ------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`               | `uuid` (PK)   | `gen_random_uuid()` default.                                                                                                                                        |
-| `report_id`        | `uuid`        | References `public.reports(id)`, `on delete cascade`.                                                                                                               |
-| `user_id`          | `uuid`        | Denormalized from `reports.user_id` so RLS doesn't need to join through `reports`. References `public.users(id)`, `on delete cascade`.                              |
-| `category`         | `text`        | Check-constrained to categories implemented so far (`cross_document_identity_consistency`, `template_leftover_detection`); extended via migration as new ones ship. |
-| `severity`         | `text`        | One of `critical` \| `moderate` \| `low` (PRD Section 19 — fixed, permanent three-level taxonomy).                                                                  |
-| `confidence`       | `text`        | One of `deterministic` \| `model_based` (PRD Section 20 — fixed, permanent two-level taxonomy). Both categories so far only ever write `deterministic`.             |
-| `status`           | `text`        | One of `open` (default) \| `acknowledged` \| `dismissed`. `carried_forward`/`resolved` (PRD Section 17) apply only on re-review, not built yet.                     |
-| `description`      | `text`        | Human-readable finding description.                                                                                                                                 |
-| `evidence`         | `text`        | The specific values compared, with page references, so the user can verify directly against their own document (PRD Section 14 point 4).                            |
-| `location`         | `text`        | Human-readable page reference(s), e.g. `"Page 1, Page 92"`. Free text, not a structured array — no per-page structured storage exists yet.                          |
-| `dismissed_reason` | `text`        | Required (DB-enforced) when `status = 'dismissed'` (FR-4).                                                                                                          |
-| `acknowledged_at`  | `timestamptz` | Set when the user acknowledges the finding.                                                                                                                         |
-| `dismissed_at`     | `timestamptz` | Set when the user dismisses the finding.                                                                                                                            |
-| `created_at`       | `timestamptz` | Defaults to `now()`.                                                                                                                                                |
+| Column             | Type          | Notes                                                                                                                                                                                                    |
+| ------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`               | `uuid` (PK)   | `gen_random_uuid()` default.                                                                                                                                                                             |
+| `report_id`        | `uuid`        | References `public.reports(id)`, `on delete cascade`.                                                                                                                                                    |
+| `user_id`          | `uuid`        | Denormalized from `reports.user_id` so RLS doesn't need to join through `reports`. References `public.users(id)`, `on delete cascade`.                                                                   |
+| `category`         | `text`        | Check-constrained to categories implemented so far (`cross_document_identity_consistency`, `template_leftover_detection`, `typo_and_formatting_inconsistency`); extended via migration as new ones ship. |
+| `severity`         | `text`        | One of `critical` \| `moderate` \| `low` (PRD Section 19 — fixed, permanent three-level taxonomy).                                                                                                       |
+| `confidence`       | `text`        | One of `deterministic` \| `model_based` (PRD Section 20 — fixed, permanent two-level taxonomy). All categories so far only ever write `deterministic`.                                                   |
+| `status`           | `text`        | One of `open` (default) \| `acknowledged` \| `dismissed`. `carried_forward`/`resolved` (PRD Section 17) apply only on re-review, not built yet.                                                          |
+| `description`      | `text`        | Human-readable finding description.                                                                                                                                                                      |
+| `evidence`         | `text`        | The specific values compared, with page references, so the user can verify directly against their own document (PRD Section 14 point 4).                                                                 |
+| `location`         | `text`        | Human-readable page reference(s), e.g. `"Page 1, Page 92"`. Free text, not a structured array — no per-page structured storage exists yet.                                                               |
+| `dismissed_reason` | `text`        | Required (DB-enforced) when `status = 'dismissed'` (FR-4).                                                                                                                                               |
+| `acknowledged_at`  | `timestamptz` | Set when the user acknowledges the finding.                                                                                                                                                              |
+| `dismissed_at`     | `timestamptz` | Set when the user dismisses the finding.                                                                                                                                                                 |
+| `created_at`       | `timestamptz` | Defaults to `now()`.                                                                                                                                                                                     |
 
 ### Row Level Security
 
