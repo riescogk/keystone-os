@@ -52,3 +52,21 @@
 - OCR, AI review, rule engine, findings, report summary, chat, embeddings, vector database, search, AI analysis, review suggestions.
 - A retry action for `failed` extractions — today the only recovery path is deleting and re-uploading the report.
 - A structured per-page storage table — `extracted_text` stores the full document as one delimited string (`--- Page N ---`), sufficient for this phase's scope.
+
+## Phase 5 — First Automated Review Check: Cross-Document Identity Consistency
+
+**Shipped:**
+
+- `public.findings` table (migration `0005_findings.sql`) with owner-scoped select/insert/update RLS, plus `review_status`/`review_completed_at`/`review_version` added to `public.reports`.
+- Deterministic identity-consistency check (`src/lib/review/identityConsistencyCheck.ts`): client name, property address, and effective date are matched across every page using common labeled-field conventions, normalized (whitespace/case, address abbreviations, multiple date formats), and flagged when two or more distinct values are found anywhere in the document. Zero AI/LLM involvement, per PRD Section 14.
+- Review runs automatically immediately after a successful extraction (`runExtraction.ts` now calls `runReview.ts`), chained within the same background pipeline — no new trigger/infrastructure.
+- `splitPagesFromStorage` added (inverse of Phase 4's `joinPagesForStorage`) so the review pipeline can recover per-page text and cite page numbers in evidence.
+- Finding triage (FR-4): `acknowledgeFinding` / `dismissFinding` Server Actions, dismissal requires a non-empty reason (enforced in the UI and via a DB check constraint).
+- Dashboard: `ReviewStatusBadge` alongside the extraction badge, polling extended to cover review in-progress states.
+- New report detail page (`/dashboard/reports/[id]`, PRD 8.5/8.6 minimal slice): shows extraction/review status and the findings list, with inline acknowledge/dismiss actions per finding.
+
+**Explicitly not shipped (by design — see `docs/architecture.md` Phase 5 "Scope decision" for the full reasoning):**
+
+- The remaining six PRD Section 18 review categories (template leftovers, arithmetic verification, narrative-to-data contradiction, missing assumptions, missing supporting documentation, typo detection).
+- Any AI/model-based check (PRD Section 13) — no LLM provider has been chosen yet.
+- Excel grid parsing, re-review/diff comparison (FR-5), export (FR-6), a numeric confidence score (permanently rejected per PRD Section 20), and a manual "re-run review" action.

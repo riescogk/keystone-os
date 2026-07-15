@@ -35,6 +35,22 @@ Running record of security decisions and open risks. Governed by Company Bible S
 - **No new externally-reachable endpoint.** Extraction is triggered from inside the existing `uploadReport` Server Action via `after()`, not a new public route, so there is no new attack surface for triggering extraction on someone else's report.
 - **Downloaded file bytes never leave the server.** `runTextExtraction` downloads the PDF from the private Storage bucket, extracts text in memory, and discards the buffer once the row is updated — no extracted text or file bytes are sent to the client from this pipeline (there is no UI reading `extracted_text` yet).
 
+## Phase 5 additions
+
+- **New `public.findings` table, RLS-scoped identically to `reports`** — select/insert/update all require `user_id = auth.uid()`. Ownership is denormalized directly onto each finding row (not just inherited via a join to `reports`), matching the existing convention (`reports.user_id`).
+- **Still no service-role key.** The review pipeline (`runReview`) uses the same session-scoped `createClient()`; findings are inserted as the report owner's own session, subject to the same RLS as everything else.
+- **No new externally-reachable endpoint for review.** Like extraction, review is chained from inside the existing background pipeline (`runTextExtraction` calling `runReview` directly) — not a new public route.
+- **Finding triage (`acknowledgeFinding`, `dismissFinding`) never trusts a client-supplied owner check.** Ownership is enforced entirely by RLS; the application code only checks whether the update affected a row, and returns the same generic "Finding not found" error whether the finding doesn't exist or belongs to someone else — this avoids leaking which case it was, consistent with the login form's generic-failure pattern (Phase 2).
+- **Dismissal reason is required at the database level**, not just the UI (`findings_dismissed_reason_required_check`), so a `dismissed` finding can never end up without a reason even via a direct API/SQL client that bypasses the Server Action.
+
+### Two-user security test addendum (Phase 5)
+
+Repeat the Phase 3 two-user test, extended to findings:
+
+1. As User A: upload and let a report be reviewed; note a finding's id (via browser dev tools / network tab if simulating a malicious client).
+2. As User B: confirm `/dashboard/reports/{User A's report id}` returns a 404 (via RLS returning no row, then `notFound()`), not User A's findings.
+3. As User B, attempt to call `acknowledgeFinding`/`dismissFinding` with User A's finding id — confirm it returns "Finding not found," and confirm afterward (as User A) that the finding's status is unchanged.
+
 ## Open risks / explicitly deferred (not yet resolved, tracked here so they aren't forgotten)
 
 - **Account/data deletion (PRD Section 8.9) is not built yet.** A user cannot currently self-delete their account. This must be built before real customer data is stored, not treated as a nice-to-have.
