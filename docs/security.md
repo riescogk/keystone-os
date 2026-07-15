@@ -28,6 +28,13 @@ Running record of security decisions and open risks. Governed by Company Bible S
 5. As User B, attempt to call `deleteReport` with User A's report id — confirm it returns "Report not found," and confirm afterward (as User A) that the report still exists.
 6. In the Supabase Dashboard, confirm `storage.objects` for the `reports` bucket shows each file only under its owner's `{user_id}/` folder.
 
+## Phase 4 additions
+
+- **First UPDATE policy on `public.reports`**, added specifically so the text-extraction pipeline can write its result back to the row (`extraction_status`, `extracted_text`, `page_count`, `extraction_completed_at`, `extraction_version`). Scoped identically to the existing select/insert/delete policies (`user_id = auth.uid()`) — this does not open the row to any operation a user couldn't already do to their own data, and does not touch the uploaded file itself.
+- **Still no service-role key.** Extraction runs via `runTextExtraction`, using the same session-scoped `createClient()` as every other server action — not an elevated-privilege client.
+- **No new externally-reachable endpoint.** Extraction is triggered from inside the existing `uploadReport` Server Action via `after()`, not a new public route, so there is no new attack surface for triggering extraction on someone else's report.
+- **Downloaded file bytes never leave the server.** `runTextExtraction` downloads the PDF from the private Storage bucket, extracts text in memory, and discards the buffer once the row is updated — no extracted text or file bytes are sent to the client from this pipeline (there is no UI reading `extracted_text` yet).
+
 ## Open risks / explicitly deferred (not yet resolved, tracked here so they aren't forgotten)
 
 - **Account/data deletion (PRD Section 8.9) is not built yet.** A user cannot currently self-delete their account. This must be built before real customer data is stored, not treated as a nice-to-have.

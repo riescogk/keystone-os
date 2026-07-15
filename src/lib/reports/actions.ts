@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   MAX_FILE_SIZE_BYTES,
@@ -10,6 +11,7 @@ import {
   isAllowedMimeType,
   hasPdfMagicBytes,
 } from "@/lib/reports/validation";
+import { runTextExtraction } from "@/lib/extraction/runExtraction";
 
 export type ActionResult =
   { success: true } | { success: false; error: string };
@@ -112,6 +114,13 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
       error: "Upload failed while saving the report record. Please try again.",
     };
   }
+
+  // Schedule text extraction to run after this response is sent, so
+  // the upload never waits on it (per Phase 4 requirement). `after()`
+  // is the minimal mechanism for this today; a future phase can swap
+  // this single call for a real queue/background-job trigger without
+  // touching runTextExtraction itself (see its own doc comment).
+  after(() => runTextExtraction(reportId));
 
   revalidatePath("/dashboard");
   return { success: true };

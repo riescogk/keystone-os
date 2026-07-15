@@ -7,11 +7,12 @@ export const metadata = {
 };
 
 /**
- * PRD Section 8.2 — Dashboard. Phase 3 adds the real report list;
- * review status/findings summary counts described in the PRD are not
- * shown yet, since reviews don't exist yet (Phase 4+). Listing here
- * is scoped to exactly what Phase 3 built: uploaded reports, nothing
- * about their review state.
+ * PRD Section 8.2 — Dashboard. Phase 3 added the real report list;
+ * Phase 4 adds each report's text-extraction status (Processing /
+ * Completed / OCR Required / Failed). Review status/findings summary
+ * counts described in the PRD are still not shown, since the review
+ * engine itself doesn't exist yet (a later phase) — extraction status
+ * is a distinct, earlier lifecycle (see docs/architecture.md Phase 4).
  */
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -25,7 +26,9 @@ export default async function DashboardPage() {
 
   const { data: reports, error: reportsError } = await supabase
     .from("reports")
-    .select("id, original_filename, file_size_bytes, created_at")
+    .select(
+      "id, original_filename, file_size_bytes, created_at, extraction_status"
+    )
     .order("created_at", { ascending: false });
 
   const firstName = profile?.full_name?.split(" ")[0];
@@ -70,6 +73,7 @@ export default async function DashboardPage() {
               originalFilename={report.original_filename}
               fileSizeBytes={report.file_size_bytes}
               createdAt={report.created_at}
+              extractionStatus={report.extraction_status}
             />
           ))}
         </ul>
