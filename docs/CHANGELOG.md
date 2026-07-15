@@ -70,3 +70,21 @@
 - The remaining six PRD Section 18 review categories (template leftovers, arithmetic verification, narrative-to-data contradiction, missing assumptions, missing supporting documentation, typo detection).
 - Any AI/model-based check (PRD Section 13) — no LLM provider has been chosen yet.
 - Excel grid parsing, re-review/diff comparison (FR-5), export (FR-6), a numeric confidence score (permanently rejected per PRD Section 20), and a manual "re-run review" action.
+
+## Phase 6 — Second Automated Review Check: Template Leftover Detection
+
+**Shipped:**
+
+- Deterministic template-leftover check (`src/lib/review/templateLeftoverCheck.ts`, PRD Section 18 category 2): scans extracted text for unresolved bracketed instructions (`[Insert Client Name]`), template merge syntax (`{{field}}`/`<<field>>`), literal "Lorem ipsum" filler, un-filled-in date/number-format placeholders (`MM/DD/YYYY`, `XXX,XXX`), unfilled blank-line runs (`____`), and bare "TBD"/"to be determined." Zero AI/LLM involvement. Patterns matched most-specific-first per line so one artifact never produces overlapping duplicate findings; repeated occurrences of the same value are grouped into one finding listing every page found (capped, "and N more page(s)").
+- `runReview.ts` now runs a list of checks (identity consistency + template leftovers) rather than one — adding this check required no change to the orchestrator's lifecycle/idempotency/error handling.
+- Migration `0006_template_leftover_findings.sql`: extends `findings.category`'s check constraint to allow the new category — the only schema change needed, since `findings` was already shaped generically.
+- `PageText`/`FindingDraft` moved from `identityConsistencyCheck.ts` into the shared `src/lib/review/types.ts`, now that two checks need them.
+- `REVIEW_VERSION` bumped (`identity-consistency-v1` → `review-pipeline-v2`) to reflect the pipeline producing different findings for the same input now that a second check runs.
+- No UI changes were needed — the existing `FindingCard`/dashboard components already render any `FindingCategory`/`FindingSeverity` generically via the shared label maps in `types.ts`.
+
+**Explicitly not shipped (by design — see `docs/architecture.md` Phase 6 "Scope decision"):**
+
+- PRD Section 18 category 3 (arithmetic verification) — deferred until Excel grid ingestion exists, since narrative-text-only arithmetic checking on commercial appraisal reports is named by the Company Bible as the hardest technical risk in the product.
+- Categories 4–5 (model-based) — still blocked on an LLM provider decision.
+- Category 6 — more naturally paired with category 3's future grid-parsing work.
+- Category 7 (typo detection) — judged lower priority than leftovers for now.

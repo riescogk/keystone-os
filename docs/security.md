@@ -51,6 +51,10 @@ Repeat the Phase 3 two-user test, extended to findings:
 2. As User B: confirm `/dashboard/reports/{User A's report id}` returns a 404 (via RLS returning no row, then `notFound()`), not User A's findings.
 3. As User B, attempt to call `acknowledgeFinding`/`dismissFinding` with User A's finding id — confirm it returns "Finding not found," and confirm afterward (as User A) that the finding's status is unchanged.
 
+## Phase 6
+
+No new security surface. Template leftover detection reuses the exact same `findings` table, RLS policies, and orchestrator (`runReview.ts`) introduced in Phase 5 — the only change was extending the `category` check constraint (migration `0006_template_leftover_findings.sql`) to allow one more value. No new tables, no new endpoints, no new client-reachable code path.
+
 ## Open risks / explicitly deferred (not yet resolved, tracked here so they aren't forgotten)
 
 - **Account/data deletion (PRD Section 8.9) is not built yet.** A user cannot currently self-delete their account. This must be built before real customer data is stored, not treated as a nice-to-have.

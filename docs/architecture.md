@@ -96,3 +96,24 @@ Deliberately excluded from Phase 5, left for later phases:
 ## What Phase 5 deliberately does not include
 
 Per the scope decision above: the six remaining PRD Section 18 review categories, any AI/model-based check (Section 13), Excel grid parsing, re-review/diff comparison (FR-5, Section 8.7), export (FR-6), and a numeric confidence score (explicitly rejected by PRD Section 20 for any phase, not just this one). There is also no manual "run review again" action — review runs automatically exactly once per report, immediately after extraction succeeds.
+
+## Phase 6 — Second Automated Review Check: Template Leftover Detection
+
+### Scope decision
+
+Same situation as Phase 5: no fixed spec exists for "Phase 6." PRD Section 18 category 2, "Template leftover detection," was the next logical slice because it's the only remaining category (besides category 1, already built) that is both fully deterministic _and_ doesn't depend on anything not yet available — category 3 (arithmetic verification) is deterministic but the Company Bible names document-parsing fidelity for financial grids as the single hardest technical problem in the whole product, and is more honestly tackled once Excel ingestion exists (Long-Term Roadmap item 3); categories 4–5 need an LLM provider (not chosen yet); category 6 is partly deterministic but is more naturally paired with category 3's later grid-parsing work; category 7 (typos) is lower-value and was judged less urgent than leftovers, which the Company Bible calls out by name as directly client-facing-embarrassing.
+
+### Design
+
+1. **New check file, same pure-function shape as Phase 5's**: `src/lib/review/templateLeftoverCheck.ts` — pages in, `FindingDraft[]` out, no Supabase, no report id.
+2. **`PageText`/`FindingDraft` moved to `src/lib/review/types.ts`.** Phase 5 defined these locally in `identityConsistencyCheck.ts`, which worked when there was only one check; now that a second check needs the same shapes, they live in the shared, dependency-free types file both checks import from, rather than one check importing from another (which would create an arbitrary ordering dependency between sibling files).
+3. **`runReview.ts` now runs a list of checks, not one.** Adding Phase 6's check meant adding one array entry (`...checkTemplateLeftovers(pages)`) — the orchestrator's lifecycle (idempotency guard, status transitions, error handling) needed zero changes, which is exactly what Phase 5's "shared findings schema" design was for.
+4. **Pattern-based, not language-model-based** (PRD Section 14): known unresolved-template signals are matched line-by-line — bracketed instructions (`[Insert Client Name]`), template merge syntax (`{{field}}`, `<<field>>`), literal "Lorem ipsum" filler, literal date/number format placeholders left un-filled-in (`MM/DD/YYYY`, `XXX,XXX`), unfilled blank-line runs (`____`), and bare "TBD"/"to be determined." Patterns are tried most-specific-first per line, and a line claimed by one pattern is skipped by the rest, so a single artifact (e.g. `[TBD]`) never produces two overlapping findings.
+5. **Occurrences are grouped, not spammed.** The same leftover value repeated across many pages produces one finding listing every page it appears on (capped at 5 shown, then "and N more page(s)"), not one finding per occurrence — matching the same "don't overwhelm the user" instinct as Section 19's severity-default philosophy.
+6. **Severity default: `moderate`.** PRD Section 19 gives no explicit default for this category (only category 7's typos are explicitly called out as Low-by-default); an unresolved placeholder in a delivered client-facing report is a real, visible defect but not inherently value-relevant, which matches Section 19's Moderate definition rather than Critical or Low.
+7. **Schema change was the minimal one anticipated in Phase 5**: migration `0006_template_leftover_findings.sql` only extends the `findings_category_check` constraint to allow the new category value — exactly the "will need extending via migration as each new category ships" note left in `0005_findings.sql`.
+8. **`REVIEW_VERSION` bumped** (`identity-consistency-v1` → `review-pipeline-v2`) since the pipeline's overall output for the same input document has changed (a second check now runs). Already-reviewed reports keep their original version string as an honest record of which checks actually ran against them — nothing is silently re-run.
+
+## What Phase 6 deliberately does not include
+
+Categories 3 (arithmetic verification — deferred to when Excel ingestion exists), 4–5 (both model-based, blocked on an LLM provider decision), 6 (paired with future grid-parsing work), and 7 (typos, judged lower-priority). No re-review/diff, export, or manual re-run action — same deferred list as Phase 5.
