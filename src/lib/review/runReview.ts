@@ -3,16 +3,18 @@ import { splitPagesFromStorage } from "@/lib/extraction/pdfTextExtractor";
 import { checkCrossDocumentIdentityConsistency } from "@/lib/review/identityConsistencyCheck";
 import { checkTemplateLeftovers } from "@/lib/review/templateLeftoverCheck";
 import { checkTypoAndFormattingIssues } from "@/lib/review/typoFormattingCheck";
+import { checkMissingSupportingDocumentation } from "@/lib/review/missingDocumentationCheck";
 import { REVIEW_VERSION } from "@/lib/review/types";
 
 /**
  * Runs every deterministic review check registered so far (Phase 5:
  * cross-document identity consistency; Phase 6: template leftover
- * detection; Phase 7: typo and formatting inconsistency) for a single
- * report, writes any resulting findings, then marks the report's
- * review as complete. Adding a future check means adding one more
- * entry to the array below — this function's lifecycle/idempotency/
- * error-handling logic doesn't change.
+ * detection; Phase 7: typo and formatting inconsistency; Phase 8:
+ * missing supporting documentation references) for a single report,
+ * writes any resulting findings, then marks the report's review as
+ * complete. Adding a future check means adding one more entry to the
+ * array below — this function's lifecycle/idempotency/error-handling
+ * logic doesn't change.
  *
  * Called from runExtraction.ts immediately after extraction succeeds
  * — review has a hard dependency on extracted text, so it makes sense
@@ -76,6 +78,7 @@ export async function runReview(reportId: string): Promise<void> {
       ...checkCrossDocumentIdentityConsistency(pages),
       ...checkTemplateLeftovers(pages),
       ...checkTypoAndFormattingIssues(pages),
+      ...checkMissingSupportingDocumentation(pages),
     ];
 
     if (findingDrafts.length > 0) {

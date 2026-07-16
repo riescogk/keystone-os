@@ -139,3 +139,26 @@ Same situation as Phases 5 and 6: no fixed spec exists for "Phase 7." PRD Sectio
 - Categories 3–6, for the same reasons as Phase 6 (Excel-ingestion and LLM-provider dependencies still unmet).
 - Multi-issue-per-line detection — a line is claimed by its first-matching pattern only.
 - Re-review/diff, export, or a manual re-run action — same deferred list as every prior review phase.
+
+## Phase 8 — Fourth Automated Review Check: Missing Supporting Documentation References (deterministic sub-case)
+
+### Scope decision
+
+By the end of Phase 7, every deterministic PRD Section 18 category with no unmet dependency had been built (categories 1, 2, 7). The remaining categories are: 3 (wants Excel ingestion), 4–5 (need an LLM provider), and 6. Category 6 is unusual: the PRD itself splits it into two sub-cases with different workflow types — _"Missing supporting documentation references (Deterministic where possible — e.g., 'see Addendum C' with no addendum present; Model-Based where inferential, e.g., a referenced comp not appearing in the grid)."_ The first half needs nothing but text already extracted; the second half needs either Excel grid ingestion or model-based judgment. Phase 8 implements **only the deterministic half** — this is the one remaining genuinely unblocked deterministic slice, found by reading the category descriptions closely rather than only their Section 13/14 tags.
+
+This required no founder-level decision (no LLM provider, no Excel/vendor dependency, no new cost) and is explicitly the kind of "viable deterministic milestone" the founder's own selection rule asked to be preferred when one exists.
+
+### Design
+
+1. **Same pure-function shape as every prior check**: `src/lib/review/missingDocumentationCheck.ts` — pages in, `FindingDraft[]` out, one more entry in `runReview.ts`'s check list.
+2. **Two distinct regex roles, not one**: a _reference_ pattern (`see Addendum C`, `refer to Exhibit B`, etc. — embedded mid-sentence) and a _heading_ pattern (a line that _starts_ with the document type + label, the closest approximation of a section heading available without layout metadata). A reference sentence starting with "See..." cannot also match the heading pattern (which requires the label itself at the very start of the line), which is what keeps the two roles from colliding.
+3. **Conservative on purpose, same philosophy as every prior check**: a table-of-contents line naming the addendum is enough to count as "found," since there's no reliable way to distinguish a ToC entry from an actual section start in flat extracted text — this only flags a reference whose label appears **nowhere else at all**, biasing toward under-flagging rather than a false positive.
+4. **Severity: `moderate`**, directly per PRD Section 19's explicit example — "an unreferenced addendum" is named there as a Moderate case.
+5. **Schema change was the same minimal pattern as Phases 6/7**: migration `0008_missing_documentation_findings.sql` only extends `findings_category_check`.
+6. **`REVIEW_VERSION` bumped** (`review-pipeline-v3` → `review-pipeline-v4`).
+
+## What Phase 8 deliberately does not include
+
+- The category's _inferential_ sub-case (a referenced comp not appearing in the grid) — needs Excel grid ingestion and/or model-based judgment, neither available.
+- Categories 3, 4, 5 — still blocked on Excel ingestion or an LLM provider decision, unchanged from Phase 7's assessment.
+- Any attempt to distinguish a real section heading from a table-of-contents entry — deliberately not attempted without layout metadata; see the conservative-by-design note above.
