@@ -8,14 +8,19 @@ export type ReviewStatus = "pending" | "processing" | "complete" | "failed";
 
 /**
  * Phase 5 implemented the first category; Phase 6 the second; Phase 7
- * the third. The full PRD Section 18 list has seven; this type (and
- * the DB check constraint in the findings migrations) grows as later
- * phases add categories.
+ * the third; Phase 8 the fourth (the deterministic sub-case of PRD
+ * Section 18 category 6 only); Phase 9 the fifth (the PDF-text-only
+ * sub-case of category 3 — see docs/architecture.md Phase 9). The
+ * full PRD Section 18 list has seven; this type (and the DB check
+ * constraint in the findings migrations) grows as later phases add
+ * categories.
  */
 export type FindingCategory =
   | "cross_document_identity_consistency"
   | "template_leftover_detection"
-  | "typo_and_formatting_inconsistency";
+  | "typo_and_formatting_inconsistency"
+  | "missing_supporting_documentation"
+  | "internal_arithmetic_verification";
 
 /** PRD Section 19 — fixed, permanent three-level taxonomy. */
 export type FindingSeverity = "critical" | "moderate" | "low";
@@ -41,12 +46,14 @@ export const IN_PROGRESS_REVIEW_STATUSES: readonly ReviewStatus[] = [
  * actually ran against them; nothing re-runs automatically when this
  * bumps.
  */
-export const REVIEW_VERSION = "review-pipeline-v3";
+export const REVIEW_VERSION = "review-pipeline-v5";
 
 export const FINDING_CATEGORY_LABEL: Record<FindingCategory, string> = {
   cross_document_identity_consistency: "Cross-Document Identity Consistency",
   template_leftover_detection: "Template Leftover Detection",
   typo_and_formatting_inconsistency: "Typo & Formatting Inconsistency",
+  missing_supporting_documentation: "Missing Supporting Documentation",
+  internal_arithmetic_verification: "Internal Arithmetic Verification",
 };
 
 export const FINDING_SEVERITY_LABEL: Record<FindingSeverity, string> = {

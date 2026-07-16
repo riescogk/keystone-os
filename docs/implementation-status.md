@@ -10,58 +10,62 @@ Note on numbering: the codebase and docs use "Phase N"; the founder-facing roadm
 - **Phase 3 — Secure Commercial Appraisal Upload.** Private `reports` Storage bucket (25 MB, PDF-only), `public.reports` table with owner-scoped RLS (select/insert/delete), authoritative server-side upload validation (MIME + magic bytes + size), signed-URL viewing, delete with confirmation, real dashboard listing.
 - **Phase 4 — PDF Text Extraction.** `unpdf`-based extraction pipeline triggered after upload via `after()`; `extraction_status` lifecycle (`pending → processing → completed | ocr_required | failed`); dashboard status badge with auto-refresh while in progress.
 - **Phase 5 — First Automated Review Check: Cross-Document Identity Consistency.** Deterministic check (client name / property address / effective date matched across the document) chained after extraction; `public.findings` table; `review_status` lifecycle on `reports`; finding triage (acknowledge/dismiss with required reason); report detail page (`/dashboard/reports/[id]`).
-- **Phase 6 — Second Automated Review Check: Template Leftover Detection.** Deterministic, pattern-based check for unresolved placeholders, template merge syntax, filler text, literal format placeholders, and blank-line runs, added as a second entry in the same `runReview` pipeline. `findings.category` constraint extended via migration; no other schema or UI change needed.
-- **Phase 7 — Third Automated Review Check: Typo & Formatting Inconsistency Detection.** Deterministic, pattern-based check for doubled words, doubled punctuation, and non-ellipsis double periods; Low severity by default per PRD Section 19. Deliberately not a dictionary-based spellchecker (false-positive risk against real appraisal vocabulary judged too high). Added as a third entry in the same `runReview` pipeline; same minimal migration pattern as Phase 6.
+- **Phase 6 — Second Automated Review Check: Template Leftover Detection.** Deterministic, pattern-based check for unresolved placeholders, template merge syntax, filler text, literal format placeholders, and blank-line runs.
+- **Phase 7 — Third Automated Review Check: Typo & Formatting Inconsistency Detection.** Deterministic check for doubled words, doubled punctuation, and non-ellipsis double periods; Low severity by default. Deliberately not a dictionary-based spellchecker.
+- **Phase 8 — Fourth Automated Review Check: Missing Supporting Documentation References (deterministic sub-case).** Finds in-text references to a named Addendum/Exhibit/Appendix/Attachment (e.g. "see Addendum C") and flags any whose section never actually appears in the document. Moderate severity.
+- **Phase 9 — Fifth Automated Review Check: Internal Arithmetic Verification (PDF-text-only sub-case).** Recalculates the Income Approach chain (PGI − vacancy/collection loss = EGI; EGI − operating expenses = NOI; NOI ÷ cap rate = indicated value) against what the report states, using only figures already present in the PDF's extracted text — **no Excel file required or used**. Critical severity. Tolerance-based comparison absorbs normal rounding.
 
-Full detail on every phase in `docs/CHANGELOG.md` and `docs/architecture.md`.
+Phases 6 through 9 all reused the exact same pattern: one new pure-function check file, one more entry in `runReview.ts`'s check list, one migration extending `findings.category`'s check constraint — zero orchestrator, RLS, or UI changes needed in any of them. Full detail on every phase in `docs/CHANGELOG.md` and `docs/architecture.md`.
 
 ## Current phase
 
-**Phase 7 is complete.** All four verification gates passed on the final code: `tsc --noEmit`, ESLint (flat config), Prettier `--check`, and `next build` (production). The check was sanity-tested against a synthetic multi-page sample: a doubled word, doubled punctuation (`"??"`), and a double period were all correctly caught; a genuine `"..."` ellipsis and a comma-separated repeated word (`"consistent, consistent"`, intentional business phrasing) were both correctly _not_ flagged.
+**Phase 9 is complete.** All four verification gates passed: `tsc --noEmit`, ESLint (flat config), Prettier `--check`, and `next build` (production). The check was sanity-tested with: (1) a report where every Income Approach figure ties out correctly (zero findings), (2) a report with deliberately wrong figures at every step of the chain (all three caught, with accurate diagnostic evidence for each), (3) a report with no income approach section at all (zero findings — the check never guesses), and (4) a report with a normal rounding-scale difference (~0.015% on a $10M value, correctly not flagged).
 
-## Remaining phases (not yet started)
+## Important correction from the prior session's assessment
 
-No phase has been specified by the founder yet. All seven PRD Section 18 review categories now stand as follows:
+Phase 8's writeup declared category 3 (arithmetic verification) blocked on an Excel-ingestion decision. **This was reassessed and found to be an overly cautious reading.** The PRD's own category-3 text says figures should be checked "wherever the underlying figures are extractable from the document **or** supporting Excel file" — Excel was always optional, never required, for this category. Phase 9 implements the PDF-text-only half, which needed no founder decision at all. This correction matters for future sessions: **read each blocked-seeming category's exact PRD wording closely before assuming a founder decision is required** — the blocker may only apply to part of the category, as it did here.
 
-- **1–2, 7 — shipped** (Phases 5, 6, 7).
-- **3 (arithmetic verification)** — deterministic, but the Company Bible names document-parsing fidelity for financial grids as the single hardest technical problem in the whole product; wants Excel grid ingestion (Long-Term Roadmap item 3) first for reliable results.
-- **4–5 (narrative-to-data contradiction, missing assumptions)** — both model-based (PRD Section 13); blocked until an LLM provider is chosen. This is a real, standing blocker — flag it to the founder when ready to unblock the AI Review Workflow.
-- **6 (missing supporting documentation references)** — partly deterministic, likely paired with category 3's future grid-parsing work.
+## Remaining phases (not yet started) — founder decision still needed for what's left
 
-With all currently-unblocked deterministic categories now shipped, the next milestone likely requires a founder decision on one of: (a) beginning Excel grid ingestion to unblock category 3, (b) choosing an LLM provider to unblock categories 4–5, or (c) moving to a different area of the roadmap entirely (re-review/diff, export, account/data deletion, OCR). Do not begin any of this until a phase is explicitly specified.
+With Phase 9, the PDF-text-only portion of every deterministic category with no genuine LLM/vendor dependency is now implemented. What remains is genuinely blocked:
 
-Other still-open items, unchanged from prior phases:
+- **Sales-comparison grid adjustment totals and reconciliation weighting** (part of category 3, and the inferential half of category 6 — "a referenced comp not appearing in the grid") — these need reliable table/grid data. The Company Bible names financial-grid parsing fidelity from PDF text as the single hardest technical problem in the product; a founder decision on Excel ingestion (Long-Term Roadmap item 3) is the honest path to making these reliable, rather than attempting them from flat PDF text and risking unreliable output.
+- **PRD Section 18 categories 4–5 (narrative-to-data contradiction, missing standard assumptions)** — both explicitly model-based (PRD Section 13). Needs a founder decision on an LLM provider — a vendor/cost decision this codebase has deliberately never made unilaterally, per explicit standing instruction.
 
-- Excel grid parsing (Company Bible Long-Term Roadmap item 3).
+Other roadmap areas, unchanged from prior phases, any of which could also be the next milestone once specified:
+
 - Re-review/diff comparison against a prior run (FR-5, PRD Section 8.7).
 - Export findings report (FR-6).
 - Account/data deletion (FR-7, PRD 8.9) and password reset — flagged as open risks since Phase 2, still not built.
 - OCR support (still explicitly out of scope; `ocr_required` reports remain unreviewable until this exists).
 
-## Important implementation decisions (Phase 7)
+**Recommendation for whoever picks Phase 10**: before assuming any of the above needs a founder decision, re-read its exact PRD wording the way Phase 9 did for category 3 — there may be a PDF-only, no-vendor sub-case still available that a quick pass would miss.
 
-- **No fixed milestone spec existed for Phase 7 either** — same situation as Phases 5–6. Typo/formatting detection (PRD Section 18 category 7) was the only remaining category with no unmet dependency. See `docs/architecture.md` Phase 7 "Scope decision."
-- **Deliberately not a dictionary-based spellchecker.** A generic English wordlist would flag enormous numbers of legitimate proper nouns, addresses, and appraisal/financial jargon — the false-positive risk was judged worse than the value of the additional catches, especially damaging for a category whose whole point is credibility. Only subject-matter-independent, reliable signals are checked: doubled words, doubled punctuation, non-ellipsis double periods.
-- **Severity default `low`**, the only category in PRD Section 18 with an explicit default stated directly in Section 19's text.
-- **Same anti-duplication tradeoff as Phase 6**: a line is claimed by its first-matching pattern; two different issues on the same line only surface the first. Accepted for consistency/simplicity given this is a Low-severity category.
-- **Schema change was the same minimal pattern as Phase 6**: one migration extending `findings.category`'s check constraint (`0007_typo_formatting_findings.sql`). No other schema/RLS/UI change needed.
-- **`REVIEW_VERSION` bumped** to `review-pipeline-v3`.
+## Important implementation decisions (Phase 9)
+
+- **The Income Approach chain was chosen, not grid adjustments**, specifically because appraisers commonly state it as a simple one-figure-per-line narrative sequence that flat PDF text extraction recovers reliably — unlike true row/column grids, which the Company Bible names as unreliable to parse from flat text.
+- **Only the first occurrence of each labeled figure is used**; a step is checked only when all of its inputs are present. A report using only the sales-comparison approach (no income approach) produces zero findings.
+- **Tolerance-based, not exact-equality, comparison** (`max($500, 1%)`) — necessary because real reports round intermediate figures.
+- **Severity `critical`**, directly from PRD Section 19's own example.
+- **Reconciliation is not checked** — it's a professional judgment weighting, not arithmetic.
+- **Same minimal migration pattern as Phases 6–8**: one migration extending `findings.category`'s check constraint (`0009_arithmetic_verification_findings.sql`).
+- **`REVIEW_VERSION` bumped** to `review-pipeline-v5`.
 
 ## Manual deployment steps still pending
 
-- Apply migration `supabase/migrations/0007_typo_formatting_findings.sql` to every environment that already has migrations `0001`–`0006` applied.
-- No new environment variables were introduced in Phase 7.
-- No new dependencies were added in Phase 7.
+- Apply migration `supabase/migrations/0009_arithmetic_verification_findings.sql` to every environment that already has migrations `0001`–`0008` applied.
+- No new environment variables were introduced in Phase 9.
+- No new dependencies were added in Phase 9.
 
 ## Known technical debt
 
-- Pre-existing (not introduced by Phases 4–7): `npm audit` reports 2 moderate-severity advisories against the `postcss` version bundled transitively by Next.js itself. No fix is available without a breaking Next.js downgrade.
+- Pre-existing (not introduced by Phases 4–9): `npm audit` reports 2 moderate-severity advisories against the `postcss` version bundled transitively by Next.js itself. No fix is available without a breaking Next.js downgrade.
 - No retry action for `failed` extractions or `failed` reviews — today the only recovery path for either is delete + re-upload.
 - No manual "re-run review" action — review runs automatically exactly once per report.
-- Phase 5/6/7 check patterns are all reasonable-but-not-exhaustive starting sets, not validated against a large corpus of real appraisal reports — expect iteration as real reports surface edge cases.
-- The typo/formatting check only reports the first-matching issue per line; a line with two distinct problems only surfaces one finding.
-- `findings.category`'s check constraint only allows the three categories implemented so far; each future category needs its own migration to extend it (by design).
+- All five deterministic checks (Phases 5–9) are reasonable-but-not-exhaustive starting sets, not validated against a large corpus of real appraisal reports — expect iteration as real reports surface edge cases (e.g. label wording variants the arithmetic check's patterns don't yet recognize).
+- The arithmetic check only recognizes one specific set of Income Approach labels; a report using unusual terminology for PGI/EGI/NOI/cap rate/indicated value simply won't be checked, rather than misreading it.
+- `findings.category`'s check constraint only allows the five categories implemented so far; each future category needs its own migration to extend it (by design).
 
 ## Next phase to begin
 
-Not yet specified by the founder. With all unblocked deterministic categories shipped, the next milestone likely needs a founder decision (Excel ingestion, LLM provider choice, or a different roadmap area). Await explicit instruction before starting Phase 8.
+Not yet specified by the founder. Genuinely blocked areas (grid/table parsing, LLM-based categories) still need an explicit founder decision. Before assuming that's the only path forward, re-check each remaining category's exact PRD wording the way Phase 9 did — there may be more unblocked, PDF-only ground still available. Await explicit instruction before starting Phase 10.

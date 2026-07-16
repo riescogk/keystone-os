@@ -59,6 +59,14 @@ No new security surface. Template leftover detection reuses the exact same `find
 
 Same as Phase 6: no new security surface. Typo/formatting detection reuses the identical `findings` table, RLS, and orchestrator; the only change is extending the `category` check constraint again (migration `0007_typo_formatting_findings.sql`).
 
+## Phase 8
+
+Same pattern again: no new security surface. Missing-documentation detection reuses the identical `findings` table, RLS, and orchestrator; the only change is extending the `category` check constraint once more (migration `0008_missing_documentation_findings.sql`).
+
+## Phase 9
+
+Same pattern again: no new security surface, no new dependency, no Excel file handling (and therefore no new file-parsing attack surface beyond what Phase 4's PDF extraction already introduced). Arithmetic verification reuses the identical `findings` table, RLS, and orchestrator; the only change is extending the `category` check constraint once more (migration `0009_arithmetic_verification_findings.sql`).
+
 ## Open risks / explicitly deferred (not yet resolved, tracked here so they aren't forgotten)
 
 - **Account/data deletion (PRD Section 8.9) is not built yet.** A user cannot currently self-delete their account. This must be built before real customer data is stored, not treated as a nice-to-have.

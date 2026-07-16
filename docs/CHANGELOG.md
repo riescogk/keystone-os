@@ -105,3 +105,36 @@
 - Categories 3–6 — still blocked on Excel ingestion (3, 6) or an LLM provider decision (4–5).
 - Multi-issue-per-line detection within this check — a line is claimed by its first-matching pattern only, same tradeoff as Phase 6.
 - Re-review/diff, export, or a manual re-run action.
+
+## Phase 8 — Fourth Automated Review Check: Missing Supporting Documentation References (deterministic sub-case)
+
+**Shipped:**
+
+- Deterministic missing-documentation check (`src/lib/review/missingDocumentationCheck.ts`, PRD Section 18 category 6's deterministic sub-case, Moderate severity per PRD Section 19's own "an unreferenced addendum" example): finds every in-text reference to a named Addendum/Exhibit/Appendix/Attachment (e.g. "see Addendum C") and flags it if no section titled that way appears anywhere else in the document. Conservative by design — a table-of-contents mention is enough to count as "found," since flat extracted text has no layout metadata to distinguish a ToC line from a real section start.
+- `runReview.ts` now runs a fourth check — zero orchestrator changes required, same as every prior addition.
+- Migration `0008_missing_documentation_findings.sql`: extends `findings.category`'s check constraint — the only schema change needed.
+- `REVIEW_VERSION` bumped (`review-pipeline-v3` → `review-pipeline-v4`).
+- No UI changes needed.
+
+**Explicitly not shipped (by design — see `docs/architecture.md` Phase 8 "Scope decision"):**
+
+- This category's own _inferential_ sub-case (a referenced comp not appearing in the grid) — the PRD itself marks this half as model-based/needing Excel grid data, neither of which exists yet.
+- Categories 3, 4, 5 — still blocked on Excel ingestion or an LLM provider decision.
+- Any attempt to distinguish a real section heading from a table-of-contents entry without layout metadata.
+
+## Phase 9 — Fifth Automated Review Check: Internal Arithmetic Verification (PDF-text-only sub-case)
+
+**Shipped:**
+
+- Deterministic arithmetic-verification check (`src/lib/review/arithmeticVerificationCheck.ts`, PRD Section 18 category 3, Critical severity per PRD Section 19's own "arithmetic errors affecting a stated value-relevant figure" example): recalculates the standard Income Approach chain — Potential Gross Income minus Vacancy/Collection Loss = Effective Gross Income; Effective Gross Income minus Total Operating Expenses = Net Operating Income; Net Operating Income divided by Capitalization Rate = Indicated Value — against what the report itself states, using only figures already present in the PDF's extracted text. No Excel file is required or used; the single-PDF upload workflow is fully preserved.
+- Tolerance-based comparison (`max($500, 1% of expected)`) so normal rounding isn't flagged, verified in testing against both a correctly-tying-out report (zero findings), a report with deliberately wrong figures at every step (all three caught with accurate diagnostic evidence), and a report with no income approach section at all (zero findings, no guessing).
+- `runReview.ts` now runs a fifth check — zero orchestrator changes required.
+- Migration `0009_arithmetic_verification_findings.sql`: extends `findings.category`'s check constraint — the only schema change needed.
+- `REVIEW_VERSION` bumped (`review-pipeline-v4` → `review-pipeline-v5`).
+- No UI changes, no new dependencies, no Excel ingestion.
+
+**Explicitly not shipped (by design — see `docs/architecture.md` Phase 9 "Scope decision"):**
+
+- Sales-comparison grid adjustment totals and reconciliation weighting — both need reliable table/grid data that flat PDF text extraction cannot provide.
+- Any Excel file parsing or requirement.
+- Categories 4, 5, and the inferential half of category 6 — still blocked on an LLM provider decision.

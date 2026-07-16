@@ -139,3 +139,52 @@ Same situation as Phases 5 and 6: no fixed spec exists for "Phase 7." PRD Sectio
 - Categories 3–6, for the same reasons as Phase 6 (Excel-ingestion and LLM-provider dependencies still unmet).
 - Multi-issue-per-line detection — a line is claimed by its first-matching pattern only.
 - Re-review/diff, export, or a manual re-run action — same deferred list as every prior review phase.
+
+## Phase 8 — Fourth Automated Review Check: Missing Supporting Documentation References (deterministic sub-case)
+
+### Scope decision
+
+By the end of Phase 7, every deterministic PRD Section 18 category with no unmet dependency had been built (categories 1, 2, 7). The remaining categories are: 3 (wants Excel ingestion), 4–5 (need an LLM provider), and 6. Category 6 is unusual: the PRD itself splits it into two sub-cases with different workflow types — _"Missing supporting documentation references (Deterministic where possible — e.g., 'see Addendum C' with no addendum present; Model-Based where inferential, e.g., a referenced comp not appearing in the grid)."_ The first half needs nothing but text already extracted; the second half needs either Excel grid ingestion or model-based judgment. Phase 8 implements **only the deterministic half** — this is the one remaining genuinely unblocked deterministic slice, found by reading the category descriptions closely rather than only their Section 13/14 tags.
+
+This required no founder-level decision (no LLM provider, no Excel/vendor dependency, no new cost) and is explicitly the kind of "viable deterministic milestone" the founder's own selection rule asked to be preferred when one exists.
+
+### Design
+
+1. **Same pure-function shape as every prior check**: `src/lib/review/missingDocumentationCheck.ts` — pages in, `FindingDraft[]` out, one more entry in `runReview.ts`'s check list.
+2. **Two distinct regex roles, not one**: a _reference_ pattern (`see Addendum C`, `refer to Exhibit B`, etc. — embedded mid-sentence) and a _heading_ pattern (a line that _starts_ with the document type + label, the closest approximation of a section heading available without layout metadata). A reference sentence starting with "See..." cannot also match the heading pattern (which requires the label itself at the very start of the line), which is what keeps the two roles from colliding.
+3. **Conservative on purpose, same philosophy as every prior check**: a table-of-contents line naming the addendum is enough to count as "found," since there's no reliable way to distinguish a ToC entry from an actual section start in flat extracted text — this only flags a reference whose label appears **nowhere else at all**, biasing toward under-flagging rather than a false positive.
+4. **Severity: `moderate`**, directly per PRD Section 19's explicit example — "an unreferenced addendum" is named there as a Moderate case.
+5. **Schema change was the same minimal pattern as Phases 6/7**: migration `0008_missing_documentation_findings.sql` only extends `findings_category_check`.
+6. **`REVIEW_VERSION` bumped** (`review-pipeline-v3` → `review-pipeline-v4`).
+
+## What Phase 8 deliberately does not include
+
+- The category's _inferential_ sub-case (a referenced comp not appearing in the grid) — needs Excel grid ingestion and/or model-based judgment, neither available.
+- Categories 3, 4, 5 — still blocked on Excel ingestion or an LLM provider decision, unchanged from Phase 7's assessment.
+- Any attempt to distinguish a real section heading from a table-of-contents entry — deliberately not attempted without layout metadata; see the conservative-by-design note above.
+
+## Phase 9 — Fifth Automated Review Check: Internal Arithmetic Verification (PDF-text-only sub-case)
+
+### Scope decision
+
+Phase 8's own writeup flagged category 3 (arithmetic verification) as blocked on Excel ingestion. On reinspection at the founder's explicit direction (preserve the single-PDF workflow; don't require Excel unless the PRD demands it), the PRD's own category-3 text does **not** require Excel — it names it as one of two possible sources: _"recalculation of extractable numeric totals ... against what the narrative/grid states, **wherever the underlying figures are extractable from the document or supporting Excel file**."_ Excel is explicitly optional everywhere else in the PRD too (Section 8.2/8.3/11: "optionally attach supporting Excel file(s)"). So a PDF-text-only implementation of category 3 is not a workaround or a lesser version of the category — it's the exact partial scope the PRD itself already anticipated as valid on its own.
+
+This is why Phase 9 was chosen over declaring Phase 9 blocked: on closer reading, category 3 was never actually as blocked as Phase 8's writeup assumed. Categories 4–5 remain genuinely blocked on an LLM provider decision, and the category-6 inferential sub-case and grid-adjustment-total math remain genuinely blocked on reliable grid/table data — none of that changed.
+
+### Design
+
+1. **Scoped to one specific, well-defined calculation chain**: the Income Approach sequence — Potential Gross Income minus Vacancy/Collection Loss = Effective Gross Income; Effective Gross Income minus Total Operating Expenses = Net Operating Income; Net Operating Income divided by the Capitalization Rate = Indicated Value. The Company Bible names this exact chain ("Income approach math (NOI calculations, cap rate application...)") as a real, common, high-value source of silent contradictions (a correction made in a spreadsheet that never propagates back to the narrative).
+2. **Why this chain and not sales-comparison grid adjustments**: appraisers commonly state the Income Approach chain as a simple labeled narrative sequence — one figure per line ("Net Operating Income: $600,000") — which flat PDF text extraction recovers reliably. Sales-comparison grids are genuinely different: true row/column tables, frequently embedded as images or complex multi-column layouts that the Company Bible names as the single hardest parsing problem in the product. Attempting grid math from flat text risked the exact kind of unreliable, false-positive-prone output the Manifesto (0.2) warns against; the Income Approach chain doesn't carry that risk because of how it's typically written.
+3. **Same pure-function shape as every prior check**: `src/lib/review/arithmeticVerificationCheck.ts` — pages in, `FindingDraft[]` out, one more entry in `runReview.ts`'s list.
+4. **Only the first occurrence of each labeled figure is used**, and a step is only checked when all of its required inputs are actually found — a report that doesn't use the income approach at all (common; many are sales-comparison-only) produces zero findings, never a guess.
+5. **Tolerance, not exact equality**: `max($500, 1% of the expected figure)`. Real reports round intermediate numbers; an exact-equality check would produce constant false positives on entirely correct math. Verified in testing that a rounding-scale difference (~0.015% on a $10M value) is correctly absorbed, while genuinely wrong figures at every step of the chain are still caught.
+6. **Severity: `critical`**, directly per PRD Section 19: "arithmetic errors affecting a stated value-relevant figure" is explicitly named as a Critical example — this is the only category so far (besides identity consistency) to use Critical.
+7. **Reconciliation is explicitly not checked.** Weighting the three valuation approaches into a final value conclusion is a professional judgment call, not a sum — nothing here checks it or claims to.
+8. **Schema change was the same minimal pattern as Phases 6/7/8**: migration `0009_arithmetic_verification_findings.sql` only extends `findings_category_check`.
+9. **`REVIEW_VERSION` bumped** (`review-pipeline-v4` → `review-pipeline-v5`).
+
+## What Phase 9 deliberately does not include
+
+- Sales-comparison grid adjustment totals and reconciliation weighting — both need reliable table/grid data that flat PDF text extraction cannot provide; attempting them would risk unreliable output.
+- Any Excel file parsing or requirement — the single-PDF workflow is fully preserved; this check runs on PDF-extracted text alone.
+- Categories 4, 5, and the inferential half of category 6 — still genuinely blocked on an LLM provider decision, unchanged from Phase 8's assessment.
