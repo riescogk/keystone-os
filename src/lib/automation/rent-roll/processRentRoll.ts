@@ -40,7 +40,71 @@ const CURRENT_RESIDENTS_MARKER = "current/notice/vacant residents";
 const FUTURE_RESIDENTS_MARKER = "future residents/applicants";
 
 function getCellText(cell: ExcelJS.Cell): string {
-  return cell.text?.trim() ?? "";
+  const value = cell.value;
+
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).trim();
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString().trim();
+  }
+
+  if (typeof value === "object") {
+    // Formula cell
+    if ("result" in value) {
+      const result = value.result;
+
+      if (result === null || result === undefined) {
+        return "";
+      }
+
+      return String(result).trim();
+    }
+
+    // Rich text cell
+    if (
+      "richText" in value &&
+      Array.isArray(value.richText)
+    ) {
+      return value.richText
+        .map((part) => part?.text ?? "")
+        .join("")
+        .trim();
+    }
+
+    // Hyperlink cell
+    if ("text" in value) {
+      const text = value.text;
+
+      if (text === null || text === undefined) {
+        return "";
+      }
+
+      return String(text).trim();
+    }
+
+    // Excel error cell
+    if ("error" in value) {
+      const error = value.error;
+
+      if (error === null || error === undefined) {
+        return "";
+      }
+
+      return String(error).trim();
+    }
+  }
+
+  return "";
 }
 
 function normalizeChargeCodes(values: string[]): Set<string> {
@@ -774,10 +838,12 @@ export async function processRentRoll(
     units
   );
 
-  createOriginalRentRollSheet(
-    outputWorkbook,
-    sourceWorksheet
-  );
+
+createOriginalRentRollSheet(
+  outputWorkbook,
+  sourceWorksheet
+);
+
 
   const output = await outputWorkbook.xlsx.writeBuffer();
 
