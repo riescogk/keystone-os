@@ -188,3 +188,27 @@ This is why Phase 9 was chosen over declaring Phase 9 blocked: on closer reading
 - Sales-comparison grid adjustment totals and reconciliation weighting — both need reliable table/grid data that flat PDF text extraction cannot provide; attempting them would risk unreliable output.
 - Any Excel file parsing or requirement — the single-PDF workflow is fully preserved; this check runs on PDF-extracted text alone.
 - Categories 4, 5, and the inferential half of category 6 — still genuinely blocked on an LLM provider decision, unchanged from Phase 8's assessment.
+
+## Phase 10 — Account & Data Deletion
+
+### Scope decision
+
+PRD Section 8.9 and FR-7 are explicit and needed no interpretation: a user can permanently delete their account and all associated uploaded files and findings; deletion needs an explicit confirmation that lists what is deleted and what (if anything) is retained; there is a loading state; and a failure must clearly state that data was **not** deleted — never leave the user unsure whether a destructive action partially succeeded. `docs/security.md` had carried this as an open risk since Phase 2 ("must be built before real customer data is stored"). This phase builds exactly that and nothing else — no review-engine, schema, or unrelated UI changes.
+
+### Design
+
+1. **Dependency chain, from the actual schema** (not assumed): `auth.users` → `public.users` (`0001`, cascade) → `public.reports` (`0002`, cascade) → `public.findings` (`0005`, cascade; also cascades directly from `public.users`). There are no other user-owned tables. User-owned **files** live in the private `reports` bucket under `{user_id}/{report_id}.pdf` (`0003`). Because the whole database side is already a cascade tree rooted at `auth.users`, deleting the auth user removes every row; the only thing cascades cannot reach is Storage.
+2. **No service-role key.** Deleting an `auth.users` row normally needs the admin API. Rather than introduce the service-role key into `src/` for the first time, migration `0010_delete_own_account.sql` adds `public.delete_own_account()`: a no-argument `SECURITY DEFINER` function that can only ever delete `auth.uid()`. Its blast radius is strictly smaller than an admin-API call: there is no user-id parameter to tamper with, and it is executable only by signed-in users.
+3. **Storage files go through the Storage API, under the user's own session.** SQL deletes against `storage.objects` would remove metadata rows but leave the underlying files, so `src/lib/account/removeUserFiles.ts` lists the user's folder and removes in pages of 100 through the Storage API, authorized by the existing "Users can delete their own report objects" RLS policy. It is driven by the folder listing, not the `reports` table, so orphaned objects with no matching row are removed too.
+4. **Order: files, then account, then session.** `deleteAccount` (`src/lib/account/actions.ts`): re-check the typed confirmation → verify the session user → remove all files → call the RPC → clear the session cookies. The RPC itself refuses to run while any of the user's files remain, so an account can never be deleted leaving unreachable files behind.
+5. **Honest failure semantics.** Storage and Postgres cannot share a transaction. Files-first means the only possible partial state is "some files gone, account intact" — recoverable by retrying, since removal is idempotent — and the UI says exactly that ("Your account was NOT deleted…"). Success is returned only after the RPC succeeds.
+6. **Fail-safe loop.** `removeAllUserFiles` returns `false` rather than spinning if a removal confirms fewer objects than requested (e.g. a policy silently skipped one) and is bounded by a maximum round count.
+7. **UI** follows existing patterns: a "Danger zone" card on the existing Settings page (PRD 8.8 places deletion there), reusing `Button` (`danger` variant) and `Input`. It lists what is deleted and what is retained (per 8.9), requires typing `DELETE`, shows an in-progress state, shows the failure message inline, and on success routes to `/login`. The phrase is re-checked server-side.
+8. **Testable seam.** The file-removal loop lives in its own plain module, separate from the `"use server"` file, so it can be exercised against a fake storage client (done in the Phase 10 sanity test: empty folder, small folder, 250-file pagination, list error, remove error, partial removal, and a no-progress removal).
+
+## What Phase 10 deliberately does not include
+
+- Profile editing, password change/reset (PRD 8.8) — still not built.
+- A re-authentication step before deletion, deletion email, or a deletion audit log — each is a deliberate product/privacy decision (see `docs/security.md` Phase 10 limitations).
+- Deleting individual reports is unchanged (Phase 3's `deleteReport`); this phase only adds whole-account deletion.
+- Any change to the review engine, findings schema, or other Milestone 1–9 behavior.

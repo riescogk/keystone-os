@@ -80,6 +80,12 @@ One row per finding produced by the review pipeline. Currently produces `categor
 - **Select / Insert / Update:** scoped to `user_id = auth.uid()`, same ownership model as every other table. Insert is included because the review pipeline writes findings using the report owner's own session (no service-role key).
 - **No delete policy** — individual findings are only ever removed as a side effect of deleting the parent report (`on delete cascade`).
 
+## Functions
+
+### `public.delete_own_account()` (Phase 10)
+
+`SECURITY DEFINER`, `search_path = ''`, returns `void`, **takes no arguments**. Deletes the calling user's `auth.users` row (`auth.uid()`); the existing `ON DELETE CASCADE` chain removes everything else: `auth.users` → `public.users` → `public.reports` → `public.findings` (findings also cascade directly from `public.users`). Raises an exception if the caller is unauthenticated, or if any object under the caller's `{user_id}/` folder still exists in the `reports` Storage bucket (the Storage API, not SQL, must remove files — see `src/lib/account/removeUserFiles.ts`). `EXECUTE` is revoked from `public`/`anon` and granted to `authenticated` only. No tables, columns, or RLS policies changed in Phase 10.
+
 ## Storage: `reports` bucket (Phase 3)
 
 - **Private** (`public = false`) — never publicly reachable by URL.

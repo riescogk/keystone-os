@@ -14,12 +14,17 @@ Note on numbering: the codebase and docs use "Phase N"; the founder-facing roadm
 - **Phase 7 — Third Automated Review Check: Typo & Formatting Inconsistency Detection.** Deterministic check for doubled words, doubled punctuation, and non-ellipsis double periods; Low severity by default. Deliberately not a dictionary-based spellchecker.
 - **Phase 8 — Fourth Automated Review Check: Missing Supporting Documentation References (deterministic sub-case).** Finds in-text references to a named Addendum/Exhibit/Appendix/Attachment (e.g. "see Addendum C") and flags any whose section never actually appears in the document. Moderate severity.
 - **Phase 9 — Fifth Automated Review Check: Internal Arithmetic Verification (PDF-text-only sub-case).** Recalculates the Income Approach chain (PGI − vacancy/collection loss = EGI; EGI − operating expenses = NOI; NOI ÷ cap rate = indicated value) against what the report states, using only figures already present in the PDF's extracted text — **no Excel file required or used**. Critical severity. Tolerance-based comparison absorbs normal rounding.
+- **Phase 10 — Account & Data Deletion.** Self-service permanent deletion from Account Settings (PRD 8.9 / FR-7): typed confirmation, explicit deleted/retained list, server-side file removal via the Storage API under the user's own session, then the account via a no-argument `SECURITY DEFINER` function `delete_own_account()` (migration `0010`); cascades remove profile, reports, findings. No service-role key introduced.
 
 Phases 6 through 9 all reused the exact same pattern: one new pure-function check file, one more entry in `runReview.ts`'s check list, one migration extending `findings.category`'s check constraint — zero orchestrator, RLS, or UI changes needed in any of them. Full detail on every phase in `docs/CHANGELOG.md` and `docs/architecture.md`.
 
 ## Current phase
 
-**Phase 9 is complete.** All four verification gates passed: `tsc --noEmit`, ESLint (flat config), Prettier `--check`, and `next build` (production). The check was sanity-tested with: (1) a report where every Income Approach figure ties out correctly (zero findings), (2) a report with deliberately wrong figures at every step of the chain (all three caught, with accurate diagnostic evidence for each), (3) a report with no income approach section at all (zero findings — the check never guesses), and (4) a report with a normal rounding-scale difference (~0.015% on a $10M value, correctly not flagged).
+**Phase 10 is complete** (see below); Phase 9 before it was also complete.
+
+**Phase 10 validation:** `npx tsc --noEmit`, `npx eslint .`, `npx prettier --check .`, and `npm run build` all pass. The file-removal loop was sanity-tested against a fake storage client (empty folder, 3 files, 250-file pagination across 3 rounds, list error, remove error, partial removal, no-progress removal — all behave correctly, including never looping forever). Migration `0010` was syntax-checked with the real PostgreSQL parser (statements and PL/pgSQL body). **Not tested here:** the end-to-end flow against a live Supabase project (no Supabase instance in the sandbox) — run the production test steps in the Phase 10 report / `docs/security.md` before relying on it.
+
+**Phase 9 (previous):** All four verification gates passed: `tsc --noEmit`, ESLint (flat config), Prettier `--check`, and `next build` (production). The check was sanity-tested with: (1) a report where every Income Approach figure ties out correctly (zero findings), (2) a report with deliberately wrong figures at every step of the chain (all three caught, with accurate diagnostic evidence for each), (3) a report with no income approach section at all (zero findings — the check never guesses), and (4) a report with a normal rounding-scale difference (~0.015% on a $10M value, correctly not flagged).
 
 ## Important correction from the prior session's assessment
 
@@ -36,7 +41,7 @@ Other roadmap areas, unchanged from prior phases, any of which could also be the
 
 - Re-review/diff comparison against a prior run (FR-5, PRD Section 8.7).
 - Export findings report (FR-6).
-- Account/data deletion (FR-7, PRD 8.9) and password reset — flagged as open risks since Phase 2, still not built.
+- Password reset and profile editing/password change (PRD 8.8) — flagged as open risks since Phase 2, still not built. (Account/data deletion was completed in Phase 10.)
 - OCR support (still explicitly out of scope; `ocr_required` reports remain unreviewable until this exists).
 
 **Recommendation for whoever picks Phase 10**: before assuming any of the above needs a founder decision, re-read its exact PRD wording the way Phase 9 did for category 3 — there may be a PDF-only, no-vendor sub-case still available that a quick pass would miss.
@@ -53,6 +58,9 @@ Other roadmap areas, unchanged from prior phases, any of which could also be the
 
 ## Manual deployment steps still pending
 
+- **Phase 10:** apply `supabase/migrations/0010_delete_own_account.sql` to every environment that has `0001`–`0009` applied (`supabase db push`). Apply it **before** deploying the new app code, or the Delete account button will fail with a clear "not deleted" error until the function exists. No new environment variables or dependencies.
+- **Phase 10 founder decisions still open:** (1) confirm the Supabase project's backup/PITR settings and state the retention window in the privacy policy; (2) decide whether to require re-authentication before deletion once password flows exist. Both are documented in `docs/security.md`.
+
 - Apply migration `supabase/migrations/0009_arithmetic_verification_findings.sql` to every environment that already has migrations `0001`–`0008` applied.
 - No new environment variables were introduced in Phase 9.
 - No new dependencies were added in Phase 9.
@@ -68,4 +76,6 @@ Other roadmap areas, unchanged from prior phases, any of which could also be the
 
 ## Next phase to begin
 
-Not yet specified by the founder. Genuinely blocked areas (grid/table parsing, LLM-based categories) still need an explicit founder decision. Before assuming that's the only path forward, re-check each remaining category's exact PRD wording the way Phase 9 did — there may be more unblocked, PDF-only ground still available. Await explicit instruction before starting Phase 10.
+(Updated Phase 10.) Account/data deletion is done, so the remaining open items are: password reset / profile editing (PRD 8.8), re-review/diff (FR-5), export (FR-6), OCR, and the genuinely blocked areas (LLM provider; reliable table/grid parsing). The previous guidance still applies: re-read each remaining category's exact PRD wording before assuming a founder decision is required.
+
+Not yet specified by the founder. Genuinely blocked areas (grid/table parsing, LLM-based categories) still need an explicit founder decision. Before assuming that's the only path forward, re-check each remaining category's exact PRD wording the way Phase 9 did — there may be more unblocked, PDF-only ground still available. Await explicit instruction before starting Phase 11.

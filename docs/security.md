@@ -67,9 +67,35 @@ Same pattern again: no new security surface. Missing-documentation detection reu
 
 Same pattern again: no new security surface, no new dependency, no Excel file handling (and therefore no new file-parsing attack surface beyond what Phase 4's PDF extraction already introduced). Arithmetic verification reuses the identical `findings` table, RLS, and orchestrator; the only change is extending the `category` check constraint once more (migration `0009_arithmetic_verification_findings.sql`).
 
+## Phase 10 — Account & Data Deletion
+
+- **Still no service-role key in `src/`.** Deleting an `auth.users` row normally requires the admin API and therefore the service-role key. Instead, migration `0010_delete_own_account.sql` adds `public.delete_own_account()`, a `SECURITY DEFINER` function that takes **no arguments** and deletes only `auth.uid()` — the caller's own account, taken from the verified JWT. There is no user-id parameter anywhere in the chain, so "delete an arbitrary user" is not expressible. This was chosen over the admin API specifically to preserve the project invariant above.
+- **Execution is locked down.** `EXECUTE` is revoked from `public` and `anon` and granted only to `authenticated`. The function sets `search_path = ''` and uses fully-qualified names (standard hardening for `SECURITY DEFINER` functions).
+- **File removal runs under the user's own session** through the Storage API, authorized by the existing "Users can delete their own report objects" RLS policy (`0003`). No policy was added or weakened.
+- **The database refuses to orphan files.** `delete_own_account()` raises an exception if any object under the caller's `{user_id}/` folder still exists in the `reports` bucket, so even a buggy or bypassed application path cannot delete an account while leaving unreachable files behind.
+- **Confirmation is enforced server-side.** The Server Action re-checks the typed confirmation phrase; the UI check only enables the button.
+- **Failure is never reported as success.** Success is returned only after the RPC succeeds. Any earlier failure returns an explicit "account was NOT deleted" error and the account still exists.
+- **Server Actions' built-in same-origin protection** applies to `deleteAccount` like every other action; no new route handler or public endpoint was added.
+
+### Two-user security test addendum (Phase 10)
+
+1. As User A and User B, each upload a report.
+2. As User A, delete the account. Confirm: A is sent to `/login`; A's credentials no longer work; A's rows are gone from `public.users`, `public.reports`, `public.findings`; A's folder in the `reports` bucket is empty.
+3. Confirm User B is completely unaffected: B's profile, reports, findings and files all still exist and open normally.
+4. As User B, in the browser console or via the Supabase client, call `supabase.rpc("delete_own_account")` only if you intend to delete B — it can only ever delete B, never A. (It accepts no arguments; there is nothing to point at another user.)
+5. Signed out / anonymous: `supabase.rpc("delete_own_account")` must fail with a permission error.
+
+### Known limitations / unresolved items (Phase 10)
+
+- **Storage and database are two systems; deletion cannot be one atomic transaction.** Files are removed first, then the account. If the file step fails midway, some files may already be gone while the account remains intact; the user sees an explicit error and can safely retry (removal is idempotent). The reverse — account deleted but files left — is blocked by the database guard above.
+- **Infrastructure-provider backups are outside this action.** Supabase platform backups (if enabled on the project's plan) retain data on the provider's own schedule. PRD 8.9 says retention details belong in a future privacy policy; the deletion UI states honestly that provider backups follow the provider's retention. **Decision for the founder:** confirm the project's backup/PITR settings and state the retention window in the privacy policy before launch ("within a stated timeframe," PRD FR-7).
+- **No re-authentication step.** Deletion requires an active session plus the typed confirmation, but not a fresh password entry. A hijacked live session could therefore delete the account. Acceptable for the current single-user v1; consider requiring a recent re-auth once password change/reset exists.
+- **Active sessions on other devices** stop working because the auth user no longer exists (the server rejects their tokens), though already-issued access tokens are not cryptographically revoked before their normal expiry. They cannot read data: every row and file is gone.
+- **No email notification or audit record** of deletion is produced (no email infrastructure exists yet; creating a deletion log would retain data about a deleted user, which needs a deliberate privacy decision).
+
 ## Open risks / explicitly deferred (not yet resolved, tracked here so they aren't forgotten)
 
-- **Account/data deletion (PRD Section 8.9) is not built yet.** A user cannot currently self-delete their account. This must be built before real customer data is stored, not treated as a nice-to-have.
+- ~~Account/data deletion (PRD Section 8.9) is not built yet.~~ **Resolved in Phase 10** — see "Phase 10 — Account & Data Deletion" above, including its known limitations (provider backups, no re-auth step).
 - **Password reset flow is not built yet.** Only sign-up and login are implemented in Phase 2.
 - **Rate limiting on auth endpoints** relies entirely on Supabase's built-in defaults in Phase 2 — no additional application-level rate limiting has been added or evaluated.
 - **No monitoring/alerting** is configured yet for auth failures, RLS policy violations, or anomalous access patterns. Acceptable for Phase 2's zero-real-user state; must be revisited before launch.

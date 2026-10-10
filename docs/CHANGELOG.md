@@ -138,3 +138,18 @@
 - Sales-comparison grid adjustment totals and reconciliation weighting — both need reliable table/grid data that flat PDF text extraction cannot provide.
 - Any Excel file parsing or requirement.
 - Categories 4, 5, and the inferential half of category 6 — still blocked on an LLM provider decision.
+
+## Phase 10 — Account & Data Deletion
+
+**Shipped:**
+
+- Self-service permanent account deletion (PRD Section 8.9, FR-7): a "Danger zone" section on the Account Settings page with an explicit what-is-deleted / what-is-retained list, a typed `DELETE` confirmation, an in-progress state, an inline failure message ("Your account was NOT deleted…"), and redirect to `/login` on success.
+- `deleteAccount` Server Action (`src/lib/account/actions.ts`): re-checks the confirmation server-side, derives the target exclusively from the verified session, removes all of the user's Storage files, deletes the account, and clears the session. Success is never reported unless the account deletion actually succeeded.
+- `removeAllUserFiles` (`src/lib/account/removeUserFiles.ts`): paginated, idempotent, folder-listing-driven removal of every object under the user's `{user_id}/` storage folder via the Storage API, failing safe on errors, partial removals, or no progress.
+- Migration `0010_delete_own_account.sql`: `public.delete_own_account()` — a no-argument `SECURITY DEFINER` function that deletes only `auth.uid()`, refuses to run while the user's storage objects remain, and is executable only by `authenticated`. Existing `ON DELETE CASCADE` constraints remove the profile, reports, and findings.
+- **No service-role key** introduced anywhere; the "no service-role key in `src/`" invariant holds.
+
+**Explicitly not shipped (by design):**
+
+- Re-authentication before deletion, deletion email notification, deletion audit log, profile editing, password change/reset.
+- Any change to Milestones 1–9 behavior, the review engine, or previous migrations.
