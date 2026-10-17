@@ -7,49 +7,33 @@ interface NavbarProps {
 
 /**
  * Persistent primary navigation for the authenticated area of the app.
- * Per PRD Section 9: Dashboard, New Review, Account Settings, Log out
- * are always reachable from here.
  */
 export function Navbar({ userEmail }: NavbarProps) {
   return (
     <header className="border-b border-slate-200 bg-white">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
         <Link
-          href="/dashboard"
+          href="/dashboard/automation"
           className="text-sm font-semibold text-slate-900"
         >
           Keystone OS
         </Link>
 
         <nav className="flex items-center gap-6" aria-label="Primary">
-  <Link
-    href="/dashboard"
-    className="text-sm font-medium text-slate-600 hover:text-slate-900"
-  >
-    Dashboard
-  </Link>
+          <Link
+            href="/dashboard/automation"
+            className="text-sm font-medium text-slate-600 hover:text-slate-900"
+          >
+            I&E / Rent Roll
+          </Link>
 
-  <Link
-    href="/dashboard/new"
-    className="text-sm font-medium text-slate-600 hover:text-slate-900"
-  >
-    New Review
-  </Link>
-
-  <Link
-    href="/dashboard/automation"
-    className="text-sm font-medium text-slate-600 hover:text-slate-900"
-  >
-    I&E / Rent Roll
-  </Link>
-
-  <Link
-    href="/dashboard/settings"
-    className="text-sm font-medium text-slate-600 hover:text-slate-900"
-  >
-    Account Settings
-  </Link>
-</nav>
+          <Link
+            href="/dashboard/settings"
+            className="text-sm font-medium text-slate-600 hover:text-slate-900"
+          >
+            Account Settings
+          </Link>
+        </nav>
 
         <div className="flex items-center gap-4">
           {userEmail && (

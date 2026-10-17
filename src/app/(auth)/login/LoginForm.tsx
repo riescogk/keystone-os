@@ -34,7 +34,8 @@ export function LoginForm() {
       return;
     }
 
-    const redirectTo = searchParams.get("redirectTo") || "/dashboard";
+    const redirectTo =
+  searchParams.get("redirectTo") || "/dashboard/automation";
     router.replace(redirectTo);
     router.refresh();
   }
