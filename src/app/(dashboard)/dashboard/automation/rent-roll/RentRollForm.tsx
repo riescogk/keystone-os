@@ -18,7 +18,7 @@ export default function RentRollForm() {
     setWarnings([]);
 
     if (!file) {
-      setError("Select a Rent Roll workbook to process.");
+      setError("Select a Rent Roll file to process.");
       return;
     }
 
@@ -58,6 +58,9 @@ export default function RentRollForm() {
         throw new Error(message);
       }
 
+      /*
+       * EXISTING EXCEL PATH
+       */
       const blob = await response.blob();
 
       const disposition =
@@ -126,14 +129,14 @@ export default function RentRollForm() {
           htmlFor="rent-roll-file"
           className="block text-sm font-medium text-slate-900"
         >
-          Rent Roll Workbook
+          Rent Roll File
         </label>
 
         <input
           id="rent-roll-file"
           name="file"
           type="file"
-          accept=".xlsx"
+          accept=".pdf,.xlsx"
           onChange={(event) => {
             setFile(event.target.files?.[0] ?? null);
             setError("");
@@ -144,7 +147,7 @@ export default function RentRollForm() {
         />
 
         <p className="mt-2 text-xs text-slate-500">
-          Excel .xlsx files only. Maximum file size: 20 MB.
+          PDF or Excel .xlsx files. Maximum file size: 20 MB.
         </p>
       </div>
 

@@ -29,7 +29,8 @@ export default function IEForm() {
 
       return (
         !name.endsWith(".xlsx") &&
-        !name.endsWith(".xlsm")
+        !name.endsWith(".xlsm") &&
+        !name.endsWith(".pdf")
       );
     });
 
@@ -37,7 +38,7 @@ export default function IEForm() {
       setFiles([]);
 
       setError(
-        `${invalidFile.name} is not a supported Excel workbook. Use .xlsx or .xlsm files.`
+        `${invalidFile.name} is not supported. Use .xlsx, .xlsm, or .pdf files.`
       );
 
       return;
@@ -61,7 +62,7 @@ export default function IEForm() {
       setFiles([]);
 
       setError(
-        "A maximum of 20 I&E workbooks can be processed at once."
+        "A maximum of 20 I&E files can be processed at once."
       );
 
       return;
@@ -81,7 +82,7 @@ export default function IEForm() {
 
     if (files.length === 0) {
       setError(
-        "Select at least one I&E workbook to process."
+        "Select at least one I&E file to process."
       );
       return;
     }
@@ -122,6 +123,48 @@ export default function IEForm() {
         throw new Error(message);
       }
 
+      const contentType =
+        response.headers.get("Content-Type") ?? "";
+
+      /*
+       * TEMPORARY PDF TEST RESPONSE
+       *
+       * While PDF parsing is being built, the API returns
+       * JSON for PDF uploads instead of an Excel workbook.
+       */
+      if (contentType.includes("application/json")) {
+        const result = (await response.json()) as {
+          filename?: string;
+          reportType?: string;
+          propertyName?: string;
+          pageCount?: number;
+          labels?: string[];
+          rowCount?: number;
+          warnings?: string[];
+        };
+
+        if (Array.isArray(result.warnings)) {
+          setWarnings(result.warnings);
+        }
+
+        setSuccess(
+          `PDF extraction test completed for ${
+            result.filename ?? "the uploaded file"
+          }. Detected type: ${
+            result.reportType ?? "unknown"
+          }. Pages: ${
+            result.pageCount ?? 0
+          }. Parsed rows: ${
+            result.rowCount ?? 0
+          }.`
+        );
+
+        return;
+      }
+
+      /*
+       * Existing Excel workbook response.
+       */
       const blob = await response.blob();
 
       const contentDisposition =
@@ -222,7 +265,7 @@ export default function IEForm() {
           htmlFor="ie-files"
           className="block text-sm font-medium text-slate-900"
         >
-          I&amp;E Workbooks
+          I&amp;E Files
         </label>
 
         <input
@@ -230,16 +273,16 @@ export default function IEForm() {
           name="files"
           type="file"
           multiple
-          accept=".xlsx,.xlsm"
+          accept=".xlsx,.xlsm,.pdf"
           disabled={processing}
           onChange={handleFiles}
           className="mt-2 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
         />
 
         <p className="mt-2 text-xs leading-5 text-slate-500">
-          Select one or more Excel workbooks for the same
-          property. Supported formats: .xlsx and .xlsm. Maximum
-          20 MB per file.
+          Select one or more I&amp;E files for the same
+          property. Supported formats: .pdf, .xlsx, and .xlsm.
+          Maximum 20 MB per file.
         </p>
       </div>
 

@@ -34,7 +34,7 @@ export async function POST(request: Request) {
     if (uploadedFiles.length === 0) {
       return NextResponse.json(
         {
-          error: "Select at least one I&E workbook to process.",
+          error: "Select at least one I&E file to process.",
         },
         { status: 400 }
       );
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
     if (uploadedFiles.length > MAX_FILES) {
       return NextResponse.json(
         {
-          error: `A maximum of ${MAX_FILES} I&E workbooks can be processed at once.`,
+          error: `A maximum of ${MAX_FILES} I&E files can be processed at once.`,
         },
         { status: 400 }
       );
@@ -65,11 +65,12 @@ export async function POST(request: Request) {
 
       if (
         !lowerName.endsWith(".xlsx") &&
-        !lowerName.endsWith(".xlsm")
+        !lowerName.endsWith(".xlsm") &&
+        !lowerName.endsWith(".pdf")
       ) {
         return NextResponse.json(
           {
-            error: `${uploadedFile.name} is not a supported Excel workbook. Use .xlsx or .xlsm files.`,
+            error: `${uploadedFile.name} is not supported. Use .xlsx, .xlsm, or .pdf files.`,
           },
           { status: 400 }
         );
@@ -94,13 +95,33 @@ export async function POST(request: Request) {
       }
 
       const arrayBuffer = await uploadedFile.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      /*
+       * TEMPORARY PDF TEST PATH
+       *
+       * For now, PDF uploads are sent through extractPdfIE()
+       * and returned as JSON.
+       *
+       * This lets us inspect exactly how unpdf reads each
+       * I&E report family before connecting PDF extraction
+       * to the final Combined I&E workbook.
+       *
+       * Existing Excel processing remains unchanged.
+       */
 
       files.push({
         name: uploadedFile.name,
-        buffer: Buffer.from(arrayBuffer),
+        buffer,
       });
     }
 
+    /*
+     * Existing Excel workflow.
+     *
+     * XLSX/XLSM files continue through processIE()
+     * exactly as before.
+     */
     const result = await processIE(files);
 
     const safeFilename = result.outputFilename.replace(/"/g, "");

@@ -1,4 +1,8 @@
 import ExcelJS from "exceljs";
+import {
+  extractPdfIE,
+  type PdfIEExtractionResult,
+} from "@/lib/automation/ie/extractPdfIE";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -17,7 +21,12 @@ export interface IEProcessResult {
   warnings: string[];
 }
 
-type ReportType = "annual" | "t12" | "separate_annual" | "budget";
+type ReportType =
+  | "annual"
+  | "t12"
+  | "separate_annual"
+  | "budget"
+  | "annualized";
 
 interface FileInfo {
   file: IEInputFile;
@@ -60,6 +69,13 @@ interface BudgetReport {
   rows: T12Row[];
 }
 
+interface AnnualizedReport {
+  file: IEInputFile;
+  propertyName: string;
+  label: string;
+  rows: T12Row[];
+}
+
 interface InternalNumberMapping {
   exact: Map<string, string | number>;
   candidates: Array<[string, string | number]>;
@@ -76,6 +92,7 @@ interface PropertyGroup {
   t12Files: IEInputFile[];
   separateAnnualFiles: IEInputFile[];
   budgetFiles: IEInputFile[];
+  annualizedFiles: IEInputFile[];
 }
 
 interface MergedRow {
@@ -317,6 +334,42 @@ function parsePeriod(
 }
 
 async function inspectFile(file: IEInputFile): Promise<FileInfo | null> {
+  const lowerName = file.name.toLowerCase();
+
+  if (lowerName.endsWith(".pdf")) {
+    const extraction = await extractPdfIE(file.buffer);
+
+if (
+  extraction.reportType !== "annual" &&
+  extraction.reportType !== "t12" &&
+  extraction.reportType !== "budget" &&
+  extraction.reportType !== "annualized"
+) {
+  return null;
+}
+
+    const propertyName = cleanPropertyName(
+      extraction.propertyName
+    );
+
+    const propertyKey = normalizePropertyName(
+      extraction.propertyName
+    );
+
+    if (!propertyKey) {
+      throw new Error(
+        `${file.name}: could not find a usable property name.`
+      );
+    }
+
+    return {
+      file,
+      reportType: extraction.reportType,
+      propertyName,
+      propertyKey,
+    };
+  }
+
   const { worksheet } = await loadWorkbook(file.buffer);
 
   const firstCells = getFirstCellsText(worksheet);
@@ -325,10 +378,17 @@ async function inspectFile(file: IEInputFile): Promise<FileInfo | null> {
   let rawPropertyName: unknown;
   let reportType: ReportType;
 
-  if (text.includes("annual statement")) {
-    rawPropertyName = rawCellValue(worksheet.getCell("A1"));
-    reportType = "annual";
-  } else if (text.includes("cash flow (12 months)")) {
+if (text.includes("annual statement")) {
+  rawPropertyName = rawCellValue(worksheet.getCell("A1"));
+  reportType = "annual";
+} else if (text.includes("statement of operations")) {
+  rawPropertyName =
+    rawCellValue(worksheet.getCell("A1")) ||
+    rawCellValue(worksheet.getCell("B1")) ||
+    rawCellValue(worksheet.getCell("C1"));
+
+  reportType = "separate_annual";
+} else if (text.includes("cash flow (12 months)")) {
     rawPropertyName = rawCellValue(worksheet.getCell("A1"));
     reportType = "t12";
   } else if (text.includes("budget") && text.includes("period")) {
@@ -793,6 +853,193 @@ async function readOSStatement(
   };
 }
 
+async function readStatementOfOperationsAnnual(
+  file: IEInputFile
+): Promise<{
+  propertyName: string;
+  label: string;
+  rows: T12Row[];
+}> {
+  const { worksheet } = await loadWorkbook(file.buffer);
+
+  // Property name can be in A1, B1, or C1 depending on the year.
+  const propertyName = cleanPropertyName(
+    rawCellValue(worksheet.getCell("A1")) ||
+      rawCellValue(worksheet.getCell("B1")) ||
+      rawCellValue(worksheet.getCell("C1"))
+  );
+
+  let ytdActualColumn: number | null = null;
+  let headerRow: number | null = null;
+  let year: string | null = null;
+
+  const maxHeaderRow = Math.min(worksheet.rowCount, 15);
+
+  for (
+    let rowNumber = 1;
+    rowNumber <= maxHeaderRow;
+    rowNumber += 1
+  ) {
+    const row = worksheet.getRow(rowNumber);
+
+    for (
+      let columnNumber = 1;
+      columnNumber <= worksheet.columnCount;
+      columnNumber += 1
+    ) {
+      const text = cleanText(
+        rawCellValue(row.getCell(columnNumber))
+      ).toLocaleLowerCase();
+
+      if (text !== "year to date") {
+        continue;
+      }
+
+      // The YTD Actual column is normally immediately
+      // to the left of the "Year To Date" heading.
+      const possibleActualColumn = columnNumber - 1;
+
+      if (possibleActualColumn < 1) {
+        continue;
+      }
+
+      // Look below the Year To Date heading for ACTUAL.
+      for (
+        let checkRow = rowNumber + 1;
+        checkRow <= Math.min(rowNumber + 3, worksheet.rowCount);
+        checkRow += 1
+      ) {
+        const actualText = cleanText(
+          rawCellValue(
+            worksheet
+              .getRow(checkRow)
+              .getCell(possibleActualColumn)
+          )
+        ).toLocaleLowerCase();
+
+        if (actualText === "actual") {
+          ytdActualColumn = possibleActualColumn;
+          headerRow = checkRow;
+
+          // Find the year near the YTD heading.
+          for (
+            let yearRow = rowNumber;
+            yearRow <= Math.min(rowNumber + 2, worksheet.rowCount);
+            yearRow += 1
+          ) {
+            for (
+              let yearColumn = possibleActualColumn;
+              yearColumn <= Math.min(
+                possibleActualColumn + 2,
+                worksheet.columnCount
+              );
+              yearColumn += 1
+            ) {
+              const foundYear = excelDateToYear(
+                rawCellValue(
+                  worksheet
+                    .getRow(yearRow)
+                    .getCell(yearColumn)
+                )
+              );
+
+              if (foundYear) {
+                year = foundYear;
+                break;
+              }
+            }
+
+            if (year) {
+              break;
+            }
+          }
+
+          break;
+        }
+      }
+
+      if (ytdActualColumn !== null) {
+        break;
+      }
+    }
+
+    if (ytdActualColumn !== null) {
+      break;
+    }
+  }
+
+  if (
+    ytdActualColumn === null ||
+    headerRow === null ||
+    !year
+  ) {
+    throw new Error(
+      `${file.name}: could not find the Year To Date ACTUAL column.`
+    );
+  }
+
+  const occurrenceCounts = new Map<string, number>();
+  const rows: T12Row[] = [];
+
+  for (
+    let rowNumber = headerRow + 1;
+    rowNumber <= worksheet.rowCount;
+    rowNumber += 1
+  ) {
+    const row = worksheet.getRow(rowNumber);
+
+    const rawName = cleanText(
+      rawCellValue(row.getCell(1))
+    );
+
+    if (!rawName) {
+      continue;
+    }
+
+    const total = numericCellValue(
+      row.getCell(ytdActualColumn)
+    );
+
+    if (total === null) {
+      continue;
+    }
+
+    // High Pointe stores account code and line item together:
+    // 500000 - Market Rent
+    const match = rawName.match(
+      /^\s*(\d+)\s*[-–—]\s*(.+?)\s*$/
+    );
+
+    const accountCode = match ? match[1] : null;
+    const name = match ? match[2].trim() : rawName;
+
+    const normalized = normalizeName(name);
+    const occurrence =
+      (occurrenceCounts.get(normalized) ?? 0) + 1;
+
+    occurrenceCounts.set(normalized, occurrence);
+
+    rows.push({
+      key: occurrenceKey(name, occurrence),
+      accountCode,
+      name,
+      total,
+    });
+  }
+
+  if (rows.length === 0) {
+    throw new Error(
+      `${file.name}: no valued Year To Date ACTUAL rows were found.`
+    );
+  }
+
+  return {
+    propertyName,
+    label: year,
+    rows,
+  };
+}
+
 async function combineSeparateAnnuals(
   files: IEInputFile[]
 ): Promise<AnnualReport> {
@@ -809,9 +1056,16 @@ async function combineSeparateAnnuals(
     rows: T12Row[];
   }> = [];
 
-  for (const file of files) {
-    const report = await readOSStatement(file, "annual");
-    const year = Number.parseInt(report.label, 10);
+ for (const file of files) {
+  const { worksheet } = await loadWorkbook(file.buffer);
+  const firstCells = getFirstCellsText(worksheet);
+  const text = firstCells.join(" | ");
+
+  const report = text.includes("statement of operations")
+    ? await readStatementOfOperationsAnnual(file)
+    : await readOSStatement(file, "annual");
+
+  const year = Number.parseInt(report.label, 10);
 
     if (!Number.isFinite(year)) {
       throw new Error(
@@ -895,6 +1149,326 @@ async function readBudgetReport(
     rows: report.rows,
   };
 }
+
+function pdfRowsToAnnualRows(
+  extraction: PdfIEExtractionResult
+): AnnualRow[] {
+  const occurrenceCounts = new Map<string, number>();
+
+  return extraction.rows.map((row) => {
+    const normalized = normalizeName(row.name);
+    const occurrence =
+      (occurrenceCounts.get(normalized) ?? 0) + 1;
+
+    occurrenceCounts.set(normalized, occurrence);
+
+    return {
+      key: occurrenceKey(row.name, occurrence),
+      name: row.name,
+      values: [...row.values],
+    };
+  });
+}
+
+function pdfRowsToT12Rows(
+  extraction: PdfIEExtractionResult
+): T12Row[] {
+  const occurrenceCounts = new Map<string, number>();
+
+  return extraction.rows.map((row) => {
+    const normalized = normalizeName(row.name);
+    const occurrence =
+      (occurrenceCounts.get(normalized) ?? 0) + 1;
+
+    occurrenceCounts.set(normalized, occurrence);
+
+    return {
+      key: occurrenceKey(row.name, occurrence),
+      accountCode: row.accountCode,
+      name: row.name,
+      total: row.values[0] ?? null,
+    };
+  });
+}
+
+async function readPdfAnnualReport(
+  file: IEInputFile
+): Promise<AnnualReport> {
+  const extraction = await extractPdfIE(file.buffer);
+
+  if (extraction.reportType !== "annual") {
+    throw new Error(
+      `${file.name} is not a recognized Annual I&E PDF.`
+    );
+  }
+
+  return {
+    file,
+    propertyName: extraction.propertyName,
+    years: extraction.labels,
+    rows: pdfRowsToAnnualRows(extraction),
+  };
+}
+
+async function combineAnnualReports(
+  files: IEInputFile[]
+): Promise<AnnualReport> {
+  if (files.length === 0) {
+    throw new Error(
+      "No Annual Statements were supplied."
+    );
+  }
+
+  const reports: AnnualReport[] = [];
+
+  for (const file of files) {
+    const report = file.name
+      .toLowerCase()
+      .endsWith(".pdf")
+      ? await readPdfAnnualReport(file)
+      : await readAnnualReport(file);
+
+    reports.push(report);
+  }
+
+  const propertyName =
+    reports[0].propertyName;
+
+  const propertyKey =
+    normalizePropertyName(propertyName);
+
+  for (const report of reports.slice(1)) {
+    if (
+      normalizePropertyName(
+        report.propertyName
+      ) !== propertyKey
+    ) {
+      throw new Error(
+        `Annual Statement property names do not match: '${propertyName}' vs '${report.propertyName}'.`
+      );
+    }
+  }
+
+  /*
+   * Flatten every annual period into an individual
+   * year so this works for BOTH:
+   *
+   * - one multi-year Annual Statement
+   * - multiple one-year Annual Statements
+   */
+  const periods: Array<{
+    year: string;
+    report: AnnualReport;
+    valueIndex: number;
+  }> = [];
+
+  for (const report of reports) {
+    for (
+      let index = 0;
+      index < report.years.length;
+      index += 1
+    ) {
+      periods.push({
+        year: report.years[index],
+        report,
+        valueIndex: index,
+      });
+    }
+  }
+
+  periods.sort(
+    (a, b) =>
+      Number(a.year) - Number(b.year)
+  );
+
+  /*
+   * Do not silently accept two sources for
+   * the same year.
+   */
+  const seenYears = new Set<string>();
+
+  for (const period of periods) {
+    if (seenYears.has(period.year)) {
+      throw new Error(
+        `Multiple Annual Statements contain year ${period.year}.`
+      );
+    }
+
+    seenYears.add(period.year);
+  }
+
+  const years =
+    periods.map((period) => period.year);
+
+  /*
+   * Build the master row order from all reports.
+   */
+  const order: string[] = [];
+  const names =
+    new Map<string, string>();
+
+  for (const report of reports) {
+    for (const row of report.rows) {
+      if (!names.has(row.key)) {
+        names.set(
+          row.key,
+          row.name
+        );
+      }
+
+      if (!order.includes(row.key)) {
+        order.push(row.key);
+      }
+    }
+  }
+
+  /*
+   * One lookup map per annual report.
+   */
+  const reportMaps =
+    new Map<
+      AnnualReport,
+      Map<string, AnnualRow>
+    >();
+
+  for (const report of reports) {
+    reportMaps.set(
+      report,
+      new Map(
+        report.rows.map(
+          (row) => [row.key, row]
+        )
+      )
+    );
+  }
+
+  const rows: AnnualRow[] =
+    order.map((key) => {
+      const values =
+        periods.map((period) => {
+          const row =
+            reportMaps
+              .get(period.report)
+              ?.get(key);
+
+          return (
+            row?.values[
+              period.valueIndex
+            ] ?? null
+          );
+        });
+
+      return {
+        key,
+        name:
+          names.get(key) ?? "",
+        values,
+      };
+    });
+
+  return {
+    file: reports[0].file,
+    propertyName,
+    years,
+    rows,
+  };
+}
+
+
+async function readPdfT12Report(
+  file: IEInputFile
+): Promise<T12Report> {
+  const extraction = await extractPdfIE(file.buffer);
+
+  if (extraction.reportType !== "t12") {
+    throw new Error(
+      `${file.name} is not a recognized T12 I&E PDF.`
+    );
+  }
+
+  return {
+    file,
+    propertyName: extraction.propertyName,
+    label: extraction.labels[0] ?? "T12",
+    rows: pdfRowsToT12Rows(extraction),
+  };
+}
+
+async function readPdfBudgetReport(
+  file: IEInputFile
+): Promise<BudgetReport> {
+  const extraction = await extractPdfIE(file.buffer);
+
+  /*
+   * Normal PDF Budget:
+   * the primary extraction itself is the budget.
+   */
+  if (extraction.reportType === "budget") {
+    return {
+      file,
+      propertyName: extraction.propertyName,
+      label: extraction.labels[0] ?? "Budget",
+      rows: pdfRowsToT12Rows(extraction),
+    };
+  }
+
+  /*
+   * Combined Actual + Budget PDF:
+   * the primary report is Annual and the Budget
+   * is stored in additionalReports.
+   */
+  const additionalBudget =
+    extraction.additionalReports?.find(
+      (report) => report.reportType === "budget"
+    );
+
+  if (additionalBudget) {
+    const budgetExtraction: PdfIEExtractionResult = {
+      propertyName: extraction.propertyName,
+      reportType: "budget",
+      labels: additionalBudget.labels,
+      rows: additionalBudget.rows,
+      pageCount: extraction.pageCount,
+      warnings: extraction.warnings,
+    };
+
+    return {
+      file,
+      propertyName: extraction.propertyName,
+      label:
+        additionalBudget.labels[0] ??
+        "Budget",
+      rows:
+        pdfRowsToT12Rows(
+          budgetExtraction
+        ),
+    };
+  }
+
+  throw new Error(
+    `${file.name} is not a recognized Budget I&E PDF.`
+  );
+}
+
+async function readPdfAnnualizedReport(
+  file: IEInputFile
+): Promise<AnnualizedReport> {
+  const extraction = await extractPdfIE(file.buffer);
+
+  if (extraction.reportType !== "annualized") {
+    throw new Error(
+      `${file.name} is not a recognized Annualized I&E PDF.`
+    );
+  }
+
+  return {
+    file,
+    propertyName: extraction.propertyName,
+    label: extraction.labels[0] ?? "T8 Annualized",
+    rows: pdfRowsToT12Rows(extraction),
+  };
+}
+
 
 function mergeReports(
   annual: AnnualReport | null,
@@ -1438,10 +2012,130 @@ function isSummaryLine(lineItem: string): boolean {
   );
 }
 
+function findAnnualizedValue(
+  lineItem: string,
+  rows: T12Row[],
+  usedIndexes: Set<number>
+): number | null {
+  const target = normalizeMappingName(lineItem);
+
+  if (!target) {
+    return null;
+  }
+
+  /*
+   * 1. Exact match first.
+   */
+  for (let index = 0; index < rows.length; index += 1) {
+    if (usedIndexes.has(index)) {
+      continue;
+    }
+
+    const candidate = normalizeMappingName(
+      rows[index].name
+    );
+
+    if (candidate === target) {
+      usedIndexes.add(index);
+      return rows[index].total;
+    }
+  }
+
+  /*
+   * 2. The annualized PDF truncates some descriptions.
+   * Accept a prefix match when it is sufficiently specific.
+   *
+   * Example:
+   * "NSF Fees Collec"
+   * matches
+   * "NSF Fees Collected"
+   */
+  const candidates: Array<{
+    index: number;
+    score: number;
+  }> = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    if (usedIndexes.has(index)) {
+      continue;
+    }
+
+    const candidate = normalizeMappingName(
+      rows[index].name
+    );
+
+    if (!candidate) {
+      continue;
+    }
+
+    const shorter =
+      target.length <= candidate.length
+        ? target
+        : candidate;
+
+    const longer =
+      target.length > candidate.length
+        ? target
+        : candidate;
+
+    const prefixMatch =
+      shorter.length >= 6 &&
+      longer.startsWith(shorter);
+
+    if (prefixMatch) {
+      candidates.push({
+        index,
+        score: shorter.length / longer.length,
+      });
+
+      continue;
+    }
+
+    const score = sequenceMatcherRatio(
+      target,
+      candidate
+    );
+
+    if (score >= 0.85) {
+      candidates.push({
+        index,
+        score,
+      });
+    }
+  }
+
+  candidates.sort(
+    (a, b) => b.score - a.score
+  );
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  /*
+   * Don't guess when two candidates are nearly identical.
+   */
+  if (
+    candidates.length > 1 &&
+    candidates[0].score - candidates[1].score < 0.03
+  ) {
+    return null;
+  }
+
+  const best = candidates[0];
+
+  usedIndexes.add(best.index);
+
+  return rows[best.index].total;
+}
+
+
+
 async function createOutputWorkbook(
   annual: AnnualReport | null,
   t12: T12Report | null,
   budget: BudgetReport | null,
+  annualized: AnnualizedReport | null,
   rows: MergedRow[],
   mapping: InternalNumberMapping
 ): Promise<{
@@ -1455,14 +2149,19 @@ async function createOutputWorkbook(
   const t12Headers = t12 ? [t12.label] : [];
   const budgetHeaders = budget ? [budget.label] : [];
 
-  const headers = [
-    "Account Code",
-    "Internal Number",
-    "Line Item",
-    ...years,
-    ...t12Headers,
-    ...budgetHeaders,
-  ];
+  const annualizedHeaders = annualized
+  ? [annualized.label]
+  : [];
+
+const headers = [
+  "Account Code",
+  "Internal Number",
+  "Line Item",
+  ...years,
+  ...t12Headers,
+  ...budgetHeaders,
+  ...annualizedHeaders,
+];
 
   worksheet.addRow(headers);
 
@@ -1474,6 +2173,8 @@ async function createOutputWorkbook(
       budgetByKey.set(row.key, row);
     }
   }
+
+  const usedAnnualizedIndexes = new Set<number>();
 
   let unmatchedCount = 0;
 
@@ -1502,6 +2203,16 @@ async function createOutputWorkbook(
       }
     }
 
+    let annualizedValue: number | null = null;
+
+    if (annualized) {
+      annualizedValue = findAnnualizedValue(
+        row.name,
+        annualized.rows,
+        usedAnnualizedIndexes
+      );
+    }
+
     const outputValues: Array<
       string | number | null
     > = [
@@ -1513,6 +2224,10 @@ async function createOutputWorkbook(
 
     if (budget) {
       outputValues.push(budgetValue);
+    }
+
+    if (annualized) {
+      outputValues.push(annualizedValue);
     }
 
     const writtenRow = worksheet.addRow(outputValues);
@@ -1646,9 +2361,10 @@ async function buildPropertyGroup(
     const lowerName = file.name.toLocaleLowerCase();
 
     if (
-      !lowerName.endsWith(".xlsx") &&
-      !lowerName.endsWith(".xlsm")
-    ) {
+  !lowerName.endsWith(".xlsx") &&
+  !lowerName.endsWith(".xlsm") &&
+  !lowerName.endsWith(".pdf")
+) {
       warnings.push(
         `Unsupported file skipped: ${file.name}`
       );
@@ -1657,16 +2373,21 @@ async function buildPropertyGroup(
 
     let info: FileInfo | null;
 
-    try {
-      info = await inspectFile(file);
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "The workbook could not be read.";
+try {
+  info = await inspectFile(file);
+} catch (error) {
+  console.error(
+    "===== I&E INSPECT ERROR =====",
+    error
+  );
 
-      throw new Error(`${file.name}: ${message}`);
-    }
+  const message =
+    error instanceof Error
+      ? error.message
+      : "The workbook could not be read.";
+
+  throw new Error(`${file.name}: ${message}`);
+}
 
     if (!info) {
       throw new Error(
@@ -1677,13 +2398,14 @@ async function buildPropertyGroup(
     let group = groups.get(info.propertyKey);
 
     if (!group) {
-      group = {
-        displayName: info.propertyName,
-        annualFiles: [],
-        t12Files: [],
-        separateAnnualFiles: [],
-        budgetFiles: [],
-      };
+group = {
+  displayName: info.propertyName,
+  annualFiles: [],
+  t12Files: [],
+  separateAnnualFiles: [],
+  budgetFiles: [],
+  annualizedFiles: [],
+};
 
       groups.set(info.propertyKey, group);
     }
@@ -1694,23 +2416,49 @@ async function buildPropertyGroup(
       group.displayName = info.propertyName;
     }
 
-    switch (info.reportType) {
-      case "annual":
-        group.annualFiles.push(file);
-        break;
+switch (info.reportType) {
+  case "annual":
+    group.annualFiles.push(file);
 
-      case "t12":
-        group.t12Files.push(file);
-        break;
+    /*
+     * Some PDF Annual reports also contain
+     * a Budget as an additional report.
+     */
+    if (
+      file.name.toLowerCase().endsWith(".pdf")
+    ) {
+      const extraction =
+        await extractPdfIE(file.buffer);
 
-      case "separate_annual":
-        group.separateAnnualFiles.push(file);
-        break;
+      const hasAdditionalBudget =
+        extraction.additionalReports?.some(
+          (report) =>
+            report.reportType === "budget"
+        ) ?? false;
 
-      case "budget":
+      if (hasAdditionalBudget) {
         group.budgetFiles.push(file);
-        break;
+      }
     }
+
+    break;
+
+  case "t12":
+    group.t12Files.push(file);
+    break;
+
+  case "separate_annual":
+    group.separateAnnualFiles.push(file);
+    break;
+
+  case "budget":
+    group.budgetFiles.push(file);
+    break;
+
+  case "annualized":
+    group.annualizedFiles.push(file);
+    break;
+}
   }
 
   if (groups.size === 0) {
@@ -1731,13 +2479,6 @@ async function buildPropertyGroup(
 
   const group = Array.from(groups.values())[0];
 
-  if (group.annualFiles.length > 1) {
-    throw new Error(
-      `Multiple legacy Annual Statements were supplied: ${group.annualFiles
-        .map((file) => file.name)
-        .join(", ")}.`
-    );
-  }
 
   if (group.t12Files.length > 1) {
     throw new Error(
@@ -1754,6 +2495,15 @@ async function buildPropertyGroup(
         .join(", ")}.`
     );
   }
+
+if (group.annualizedFiles.length > 1) {
+  throw new Error(
+    `Multiple Annualized files were supplied: ${group.annualizedFiles
+      .map((file) => file.name)
+      .join(", ")}.`
+  );
+}
+
 
   /*
    * The original script allows multiple OS/Yardi separate YE statements
@@ -1791,19 +2541,29 @@ export async function processIE(
 
   const mapping = await loadInternalNumberMapping();
 
-  const annual =
-    group.separateAnnualFiles.length > 0
-      ? await combineSeparateAnnuals(
-          group.separateAnnualFiles
-        )
-      : group.annualFiles.length === 1
-        ? await readAnnualReport(group.annualFiles[0])
-        : null;
+let annual: AnnualReport | null = null;
 
+if (group.separateAnnualFiles.length > 0) {
+  annual = await combineSeparateAnnuals(
+    group.separateAnnualFiles
+  );
+} else if (group.annualFiles.length > 0) {
+  annual = await combineAnnualReports(
+    group.annualFiles
+  );
+}
   let t12: T12Report | null = null;
 
-  if (group.t12Files.length === 1) {
-    const t12File = group.t12Files[0];
+if (group.t12Files.length === 1) {
+  const t12File = group.t12Files[0];
+
+  if (
+    t12File.name
+      .toLowerCase()
+      .endsWith(".pdf")
+  ) {
+    t12 = await readPdfT12Report(t12File);
+  } else {
     const info = await inspectFile(t12File);
 
     if (!info) {
@@ -1812,9 +2572,7 @@ export async function processIE(
       );
     }
 
-    if (
-      info.reportType === "t12"
-    ) {
+    if (info.reportType === "t12") {
       const { worksheet } =
         await loadWorkbook(t12File.buffer);
 
@@ -1839,11 +2597,46 @@ export async function processIE(
       }
     }
   }
+}
 
-  const budget =
-    group.budgetFiles.length === 1
-      ? await readBudgetReport(group.budgetFiles[0])
-      : null;
+  let budget: BudgetReport | null = null;
+
+if (group.budgetFiles.length === 1) {
+  const budgetFile = group.budgetFiles[0];
+
+  budget = budgetFile.name
+    .toLowerCase()
+    .endsWith(".pdf")
+    ? await readPdfBudgetReport(budgetFile)
+    : await readBudgetReport(budgetFile);
+}
+
+let annualized: AnnualizedReport | null = null;
+
+if (group.annualizedFiles.length === 1) {
+  const annualizedFile = group.annualizedFiles[0];
+
+  annualized = await readPdfAnnualizedReport(
+    annualizedFile
+  );
+}
+
+if (annualized) {
+  const basePropertyName =
+    annual?.propertyName ??
+    t12?.propertyName ??
+    budget?.propertyName;
+
+  if (
+    basePropertyName &&
+    normalizePropertyName(basePropertyName) !==
+      normalizePropertyName(annualized.propertyName)
+  ) {
+    throw new Error(
+      `The Annualized property '${annualized.propertyName}' does not match '${basePropertyName}'.`
+    );
+  }
+}
 
   if (annual && t12) {
     if (
@@ -1899,6 +2692,7 @@ export async function processIE(
     annual,
     t12,
     budget,
+    annualized,
     rows,
     mapping
   );

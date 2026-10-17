@@ -4,6 +4,13 @@ export interface ProcessRentRollOptions {
   chargeCodes: string[];
 }
 
+export interface ProcessRentRollResult {
+  buffer: Buffer;
+  outputFilename: string;
+  warnings: string[];
+  unitCount: number;
+}
+
 export interface RentRollUnit {
   unit: string;
   unitType: string;
@@ -15,11 +22,13 @@ export interface RentRollUnit {
   rentAmount: number;
 }
 
-export interface ProcessRentRollResult {
-  buffer: Buffer;
-  outputFilename: string;
+export interface ProcessPdfRentRollOptions {
+  originalFilename: string;
+  propertyName: string;
+  asOfDate: string;
+  pageCount: number;
+  units: Omit<RentRollUnit, "unitCategory">[];
   warnings: string[];
-  unitCount: number;
 }
 
 interface CategoryDefinition {
@@ -39,6 +48,35 @@ interface CategorySummary {
 const CURRENT_RESIDENTS_MARKER = "current/notice/vacant residents";
 const FUTURE_RESIDENTS_MARKER = "future residents/applicants";
 
+const ONESITE_RENT_ROLL_MARKER = "rent roll detail";
+
+function isOneSiteRentRoll(
+  worksheet: ExcelJS.Worksheet
+): boolean {
+  for (let rowNumber = 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    const row = worksheet.getRow(rowNumber);
+
+    for (
+      let columnNumber = 1;
+      columnNumber <= worksheet.columnCount;
+      columnNumber += 1
+    ) {
+      const text = getCellText(row.getCell(columnNumber))
+        .trim()
+        .toLowerCase();
+
+      if (
+        text.includes("rent roll detail") ||
+        text.includes("floorplan") ||
+        text.includes("trans code")
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
 function getCellText(cell: ExcelJS.Cell): string {
   const value = cell.value;
 
@@ -455,6 +493,392 @@ function extractUnits(
   return { units, warnings };
 }
 
+function extractOneSiteUnits(
+  worksheet: ExcelJS.Worksheet,
+  chargeCodes: Set<string>
+): { units: RentRollUnit[]; warnings: string[] } {
+  const units: RentRollUnit[] = [];
+  const warnings: string[] = [];
+
+  const normalizeHeader = (value: string): string =>
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+
+  /*
+   * OneSite exports are not consistent about header layout.
+   *
+   * Some use one header row:
+   *   Trans Code
+   *   Lease Rent
+   *
+   * Others split headers across two rows:
+   *   Trans
+   *   Code
+   *
+   *   Lease
+   *   Rent
+   *
+   * Find the table by looking for Unit + Floorplan, then build
+   * combined header names from that row and the row above it.
+   */
+  let headerRowNumber: number | null = null;
+
+  let unitColumn: number | null = null;
+  let floorplanColumn: number | null = null;
+  let sqftColumn: number | null = null;
+  let statusColumn: number | null = null;
+  let residentColumn: number | null = null;
+  let marketRentColumn: number | null = null;
+  let transCodeColumn: number | null = null;
+  let rentAmountColumn: number | null = null;
+
+  const maxHeaderRows = Math.min(worksheet.rowCount, 50);
+  const maxColumns = Math.min(worksheet.columnCount, 50);
+
+  for (
+    let rowNumber = 1;
+    rowNumber <= maxHeaderRows;
+    rowNumber += 1
+  ) {
+    const row = worksheet.getRow(rowNumber);
+
+    let candidateUnitColumn: number | null = null;
+    let candidateFloorplanColumn: number | null = null;
+
+    for (
+      let columnNumber = 1;
+      columnNumber <= maxColumns;
+      columnNumber += 1
+    ) {
+      const text = normalizeHeader(
+        getCellText(row.getCell(columnNumber))
+      );
+
+      if (text === "unit") {
+        candidateUnitColumn = columnNumber;
+      }
+
+      if (
+        text === "floorplan" ||
+        text === "floor plan"
+      ) {
+        candidateFloorplanColumn = columnNumber;
+      }
+    }
+
+    if (
+      candidateUnitColumn === null ||
+      candidateFloorplanColumn === null
+    ) {
+      continue;
+    }
+
+    headerRowNumber = rowNumber;
+    unitColumn = candidateUnitColumn;
+    floorplanColumn = candidateFloorplanColumn;
+
+    /*
+     * Build the effective header for every column.
+     *
+     * Example:
+     *   row above = "Trans"
+     *   current   = "Code"
+     *   effective = "trans code"
+     */
+    for (
+      let columnNumber = 1;
+      columnNumber <= maxColumns;
+      columnNumber += 1
+    ) {
+      const currentText = normalizeHeader(
+        getCellText(row.getCell(columnNumber))
+      );
+
+      const previousText =
+        rowNumber > 1
+          ? normalizeHeader(
+              getCellText(
+                worksheet
+                  .getRow(rowNumber - 1)
+                  .getCell(columnNumber)
+              )
+            )
+          : "";
+
+      const combinedText = normalizeHeader(
+        [previousText, currentText]
+          .filter(Boolean)
+          .join(" ")
+      );
+
+      const candidates = new Set([
+        currentText,
+        previousText,
+        combinedText,
+      ]);
+
+      if (
+        candidates.has("sqft") ||
+        candidates.has("sq ft") ||
+        candidates.has("sq. ft.") ||
+        candidates.has("square feet") ||
+        candidates.has("soft")
+      ) {
+        sqftColumn = columnNumber;
+      }
+
+      if (
+        candidates.has("status") ||
+        candidates.has("unit/lease status")
+      ) {
+        statusColumn = columnNumber;
+      }
+
+      if (
+        candidates.has("name") ||
+        candidates.has("resident") ||
+        candidates.has("resident name")
+      ) {
+        residentColumn = columnNumber;
+      }
+
+      for (const candidate of candidates) {
+        if (
+          candidate === "market rent" ||
+          candidate.includes("market +add") ||
+          candidate.includes("market + add")
+        ) {
+          marketRentColumn = columnNumber;
+        }
+
+        if (
+          candidate === "trans code" ||
+          candidate === "transaction code"
+        ) {
+          transCodeColumn = columnNumber;
+        }
+
+        if (
+          candidate === "lease rent" ||
+          candidate === "charge amount" ||
+          candidate === "rent amount"
+        ) {
+          rentAmountColumn = columnNumber;
+        }
+      }
+    }
+
+    /*
+     * We found the real table only if the essential OneSite
+     * columns can all be mapped.
+     */
+    if (
+      sqftColumn !== null &&
+      residentColumn !== null &&
+      marketRentColumn !== null &&
+      transCodeColumn !== null &&
+      rentAmountColumn !== null
+    ) {
+      break;
+    }
+
+    /*
+     * This Unit/Floorplan row wasn't a usable OneSite table.
+     * Reset and continue searching.
+     */
+    headerRowNumber = null;
+    unitColumn = null;
+    floorplanColumn = null;
+    sqftColumn = null;
+    statusColumn = null;
+    residentColumn = null;
+    marketRentColumn = null;
+    transCodeColumn = null;
+    rentAmountColumn = null;
+  }
+
+  if (
+    headerRowNumber === null ||
+    unitColumn === null ||
+    floorplanColumn === null ||
+    sqftColumn === null ||
+    residentColumn === null ||
+    marketRentColumn === null ||
+    transCodeColumn === null ||
+    rentAmountColumn === null
+  ) {
+    throw new Error(
+      "The OneSite Rent Roll table headers could not be identified."
+    );
+  }
+
+  let rowNumber = headerRowNumber + 1;
+
+  while (rowNumber <= worksheet.rowCount) {
+    const row = worksheet.getRow(rowNumber);
+
+    const unit = getCellText(
+      row.getCell(unitColumn)
+    );
+
+    const unitType = getCellText(
+      row.getCell(floorplanColumn)
+    );
+
+    const sqft = numericCellValue(
+      row.getCell(sqftColumn)
+    );
+
+    /*
+     * A real unit row requires Unit + Floorplan + Sq Ft.
+     * Charge continuation rows therefore won't become units.
+     */
+    if (
+      !unit ||
+      !isValidUnit(unit) ||
+      !unitType ||
+      sqft === null
+    ) {
+      rowNumber += 1;
+      continue;
+    }
+
+    const status =
+      statusColumn !== null
+        ? getCellText(row.getCell(statusColumn))
+        : "";
+
+    let residentName = getCellText(
+      row.getCell(residentColumn)
+    );
+
+    const marketRent = numericCellValue(
+      row.getCell(marketRentColumn)
+    );
+
+    const statusUpper = status.toUpperCase();
+
+    if (statusUpper.includes("VACANT")) {
+      residentName = residentName
+        ? `VACANT - ${residentName}`
+        : "VACANT";
+    }
+
+    if (statusUpper.includes("MODEL")) {
+      residentName = residentName
+        ? `MODEL - ${residentName}`
+        : "MODEL";
+    }
+
+    let matchedChargeCode = "";
+    let rentAmount = 0;
+
+    /*
+     * Search the unit row and continuation rows for one of
+     * the charge codes entered by the user on the webpage.
+     */
+    let chargeRowNumber = rowNumber;
+
+    while (chargeRowNumber <= worksheet.rowCount) {
+      const chargeRow =
+        worksheet.getRow(chargeRowNumber);
+
+      if (chargeRowNumber > rowNumber) {
+        const possibleNextUnit = getCellText(
+          chargeRow.getCell(unitColumn)
+        );
+
+        const possibleNextFloorplan = getCellText(
+          chargeRow.getCell(floorplanColumn)
+        );
+
+        const possibleNextSqft = numericCellValue(
+          chargeRow.getCell(sqftColumn)
+        );
+
+        if (
+          possibleNextUnit &&
+          isValidUnit(possibleNextUnit) &&
+          possibleNextFloorplan &&
+          possibleNextSqft !== null
+        ) {
+          break;
+        }
+
+        /*
+         * Don't use a future applicant's charge as the
+         * current unit's rent.
+         */
+        if (statusColumn !== null) {
+          const continuationStatus = getCellText(
+            chargeRow.getCell(statusColumn)
+          )
+            .trim()
+            .toLowerCase();
+
+          if (continuationStatus === "applicant") {
+            break;
+          }
+        }
+      }
+
+      const sourceChargeCode = getCellText(
+        chargeRow.getCell(transCodeColumn)
+      );
+
+      const normalizedCode =
+        sourceChargeCode.trim().toLowerCase();
+
+      if (chargeCodes.has(normalizedCode)) {
+        matchedChargeCode = normalizedCode;
+
+        rentAmount =
+          numericCellValue(
+            chargeRow.getCell(rentAmountColumn)
+          ) ?? 0;
+
+        break;
+      }
+
+      chargeRowNumber += 1;
+    }
+
+    const occupied =
+      statusUpper.includes("OCCUPIED");
+
+    if (occupied && !matchedChargeCode) {
+      warnings.push(
+        `Unit ${unit} appears occupied but no matching rent charge code was found. Rent Amount was set to $0.`
+      );
+    }
+
+    units.push({
+      unit,
+      unitType,
+      sqft,
+      unitCategory: "",
+      residentName,
+      marketRent,
+      chargeCode: matchedChargeCode,
+      rentAmount,
+    });
+
+    rowNumber += 1;
+  }
+
+  if (units.length === 0) {
+    throw new Error(
+      "No valid units were found in the OneSite Rent Roll."
+    );
+  }
+
+  assignUnitCategories(units);
+
+  return { units, warnings };
+}
+
 function buildCategorySummary(units: RentRollUnit[]): CategorySummary[] {
   const summaries = new Map<string, CategorySummary>();
 
@@ -708,6 +1132,142 @@ function createSummarySheet(
   worksheet.getColumn(6).width = 14;
 }
 
+function createPdfSummarySheet(
+  workbook: ExcelJS.Workbook,
+  units: RentRollUnit[],
+  propertyName: string,
+  asOfDate: string
+): void {
+  const worksheet = workbook.addWorksheet("Summary");
+
+  worksheet.addRow([
+    propertyName || "Rent Roll",
+  ]);
+
+  if (asOfDate) {
+    worksheet.addRow([
+      `As Of: ${asOfDate}`,
+    ]);
+  }
+
+  worksheet.addRow([]);
+
+  const header = worksheet.addRow([
+    "Unit Category",
+    "SQFT",
+    "TotalCount",
+    "OccupiedCount",
+    "VacantCount",
+    "ModelCount",
+  ]);
+
+  styleHeader(header);
+
+  const summaries = buildCategorySummary(units);
+
+  for (const summary of summaries) {
+    worksheet.addRow([
+      summary.category,
+      summary.sqft,
+      summary.totalCount,
+      summary.occupiedCount,
+      summary.vacantCount,
+      summary.modelCount,
+    ]);
+  }
+
+  const totalRow = worksheet.addRow([
+    "TOTAL",
+    "",
+    summaries.reduce(
+      (sum, item) => sum + item.totalCount,
+      0
+    ),
+    summaries.reduce(
+      (sum, item) => sum + item.occupiedCount,
+      0
+    ),
+    summaries.reduce(
+      (sum, item) => sum + item.vacantCount,
+      0
+    ),
+    summaries.reduce(
+      (sum, item) => sum + item.modelCount,
+      0
+    ),
+  ]);
+
+  totalRow.font = { bold: true };
+
+  worksheet.getColumn(1).width = 22;
+  worksheet.getColumn(2).width = 14;
+  worksheet.getColumn(3).width = 14;
+  worksheet.getColumn(4).width = 16;
+  worksheet.getColumn(5).width = 14;
+  worksheet.getColumn(6).width = 14;
+}
+
+function createPdfOriginalSourceSheet(
+  workbook: ExcelJS.Workbook,
+  originalFilename: string,
+  propertyName: string,
+  asOfDate: string,
+  pageCount: number
+): void {
+  const worksheet = workbook.addWorksheet("Original Source");
+
+  const title = worksheet.addRow([
+    "Original Rent Roll Source",
+  ]);
+
+  title.font = {
+    bold: true,
+    size: 14,
+  };
+
+  worksheet.addRow([]);
+
+  worksheet.addRow([
+    "Source File",
+    originalFilename,
+  ]);
+
+  worksheet.addRow([
+    "Source Type",
+    "PDF",
+  ]);
+
+  worksheet.addRow([
+    "Property",
+    propertyName || "",
+  ]);
+
+  worksheet.addRow([
+    "As Of Date",
+    asOfDate || "",
+  ]);
+
+  worksheet.addRow([
+    "Page Count",
+    pageCount,
+  ]);
+
+  worksheet.addRow([]);
+
+  worksheet.addRow([
+    "Note",
+    "The original source was a PDF. The PDF was read directly and was not converted to Excel before processing.",
+  ]);
+
+  worksheet.getColumn(1).width = 20;
+  worksheet.getColumn(2).width = 80;
+
+  worksheet.getColumn(2).alignment = {
+    wrapText: true,
+    vertical: "top",
+  };
+}
+
 /*
  * Copy the uploaded source worksheet into the generated workbook so the
  * final file always contains the original Rent Roll for reference.
@@ -792,6 +1352,70 @@ function createOriginalRentRollSheet(
   }
 }
 
+export async function buildPdfRentRollWorkbook(
+  options: ProcessPdfRentRollOptions
+): Promise<ProcessRentRollResult> {
+  const units: RentRollUnit[] = options.units.map(
+    (unit) => ({
+      ...unit,
+      unitCategory: "",
+    })
+  );
+
+  if (units.length === 0) {
+    throw new Error(
+      "No Rent Roll units were supplied for workbook generation."
+    );
+  }
+
+  /*
+   * Use the exact same category logic as the Excel workflow.
+   */
+  assignUnitCategories(units);
+
+  const outputWorkbook = new ExcelJS.Workbook();
+
+  /*
+   * Keep the same basic sheet order as the Excel workflow:
+   *
+   * 1. Summary
+   * 2. Clean Rent Roll
+   * 3. Original Source
+   */
+  createPdfSummarySheet(
+    outputWorkbook,
+    units,
+    options.propertyName,
+    options.asOfDate
+  );
+
+  createCleanRentRollSheet(
+    outputWorkbook,
+    units
+  );
+
+  createPdfOriginalSourceSheet(
+    outputWorkbook,
+    options.originalFilename,
+    options.propertyName,
+    options.asOfDate,
+    options.pageCount
+  );
+
+  const output =
+    await outputWorkbook.xlsx.writeBuffer();
+
+  const sourceBaseName =
+    options.originalFilename.replace(/\.pdf$/i, "");
+
+  return {
+    buffer: Buffer.from(output),
+    outputFilename: `${sourceBaseName}_Clean.xlsx`,
+    warnings: options.warnings,
+    unitCount: units.length,
+  };
+}
+
 export async function processRentRoll(
   input: Buffer,
   originalFilename: string,
@@ -807,16 +1431,15 @@ export async function processRentRoll(
 
   const sourceWorksheet = sourceWorkbook.worksheets[0];
 
-  if (!sourceWorksheet) {
-    throw new Error(
-      "The uploaded workbook does not contain a worksheet."
-    );
-  }
-
-  const { units, warnings } = extractUnits(
-    sourceWorksheet,
-    chargeCodes
+ if (!sourceWorksheet) {
+  throw new Error(
+    "The uploaded workbook does not contain a worksheet."
   );
+}
+
+const { units, warnings } = isOneSiteRentRoll(sourceWorksheet)
+  ? extractOneSiteUnits(sourceWorksheet, chargeCodes)
+  : extractUnits(sourceWorksheet, chargeCodes);
 
   const outputWorkbook = new ExcelJS.Workbook();
 
