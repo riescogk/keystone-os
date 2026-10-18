@@ -2001,6 +2001,32 @@ function findInternalNumber(
   return null;
 }
 
+function getSignFlipNote(lineItem: string): string | null {
+  const normalized = normalizeMappingName(lineItem);
+
+  if (normalized.includes("model unit")) {
+    return "Sign flipped - Model Units";
+  }
+
+  if (normalized.includes("employee discount")) {
+    return "Sign flipped - Employee Discount";
+  }
+
+  return null;
+}
+
+function flipSignIfNeeded(
+  value: number | null,
+  shouldFlip: boolean
+): number | null {
+  if (value === null || !shouldFlip) {
+    return value;
+  }
+
+  return value === 0 ? 0 : -value;
+}
+
+
 function isSummaryLine(lineItem: string): boolean {
   const normalized = cleanText(lineItem).toLocaleLowerCase();
 
@@ -2161,6 +2187,7 @@ const headers = [
   ...t12Headers,
   ...budgetHeaders,
   ...annualizedHeaders,
+  "Notes",
 ];
 
   worksheet.addRow(headers);
@@ -2179,7 +2206,9 @@ const headers = [
   let unmatchedCount = 0;
 
   for (const row of rows) {
-    const summary = isSummaryLine(row.name);
+  const summary = isSummaryLine(row.name);
+  const signFlipNote = getSignFlipNote(row.name);
+  const shouldFlipSign = signFlipNote !== null;
 
     const internalNumber = summary
       ? null
@@ -2213,22 +2242,30 @@ const headers = [
       );
     }
 
-    const outputValues: Array<
-      string | number | null
-    > = [
-      row.accountCode,
-      internalNumber,
-      row.name,
-      ...row.values,
-    ];
+const outputValues: Array<
+  string | number | null
+> = [
+  row.accountCode,
+  internalNumber,
+  row.name,
+  ...row.values.map((value) =>
+    flipSignIfNeeded(value, shouldFlipSign)
+  ),
+];
 
-    if (budget) {
-      outputValues.push(budgetValue);
-    }
+if (budget) {
+  outputValues.push(
+    flipSignIfNeeded(budgetValue, shouldFlipSign)
+  );
+}
 
-    if (annualized) {
-      outputValues.push(annualizedValue);
-    }
+if (annualized) {
+  outputValues.push(
+    flipSignIfNeeded(annualizedValue, shouldFlipSign)
+  );
+}
+
+outputValues.push(signFlipNote);
 
     const writtenRow = worksheet.addRow(outputValues);
 
@@ -2285,7 +2322,7 @@ const headers = [
   });
 
   const firstValueColumn = 4;
-  const lastValueColumn = headers.length;
+const lastValueColumn = headers.length - 1;
 
   for (
     let rowNumber = 2;
@@ -2321,17 +2358,19 @@ const headers = [
     },
   };
 
-  worksheet.getColumn(1).width = 16;
-  worksheet.getColumn(2).width = 18;
-  worksheet.getColumn(3).width = 38;
+worksheet.getColumn(1).width = 16;
+worksheet.getColumn(2).width = 18;
+worksheet.getColumn(3).width = 38;
 
-  for (
-    let columnNumber = 4;
-    columnNumber <= lastValueColumn;
-    columnNumber += 1
-  ) {
-    worksheet.getColumn(columnNumber).width = 16;
-  }
+for (
+  let columnNumber = 4;
+  columnNumber <= lastValueColumn;
+  columnNumber += 1
+) {
+  worksheet.getColumn(columnNumber).width = 16;
+}
+
+worksheet.getColumn(headers.length).width = 30;
 
   const output = await workbook.xlsx.writeBuffer();
 
