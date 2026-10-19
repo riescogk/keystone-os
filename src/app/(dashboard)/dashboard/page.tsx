@@ -28,11 +28,19 @@ export default async function DashboardPage() {
   const { data: reports, error: reportsError } = await supabase
     .from("reports")
     .select(
-      "id, original_filename, file_size_bytes, created_at, extraction_status, review_status"
+      "id, original_filename, file_size_bytes, created_at, extraction_status, review_status, previous_report_id"
     )
     .order("created_at", { ascending: false });
 
   const firstName = profile?.full_name?.split(" ")[0];
+
+  // PRD Section 15: a report is "Superseded" once a revised draft of it
+  // has been uploaded. Derived from the revision links, not stored.
+  const supersededIds = new Set(
+    (reports ?? [])
+      .map((report) => report.previous_report_id)
+      .filter((id): id is string => typeof id === "string")
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -76,6 +84,8 @@ export default async function DashboardPage() {
               createdAt={report.created_at}
               extractionStatus={report.extraction_status}
               reviewStatus={report.review_status}
+              isRevision={report.previous_report_id !== null}
+              isSuperseded={supersededIds.has(report.id)}
             />
           ))}
         </ul>

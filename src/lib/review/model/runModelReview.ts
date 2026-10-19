@@ -5,6 +5,8 @@ import {
   runNarrativeContradictionCheck,
 } from "@/lib/review/model/narrativeContradictionCheck";
 import { createOpenAIProvider } from "@/lib/review/model/openaiProvider";
+import { loadPriorFindings } from "@/lib/review/comparison/loadPriorFindings";
+import { planFindingInserts } from "@/lib/review/comparison/findingMatching";
 import type { ModelReviewProvider } from "@/lib/review/model/provider";
 import type {
   ModelReviewFailureReason,
@@ -165,7 +167,7 @@ export async function executeModelReview(
 
     const { data: report, error: fetchError } = await supabase
       .from("reports")
-      .select("user_id, extracted_text")
+      .select("user_id, extracted_text, previous_report_id")
       .eq("id", reportId)
       .single();
 
@@ -211,8 +213,28 @@ export async function executeModelReview(
       );
 
       if (fresh.length > 0) {
+        // Phase 13 (PRD FR-5): on a revised draft, match against the
+        // previous review's MODEL-BASED findings only. Identity comes
+        // from the verbatim quotes each finding cites, never from the
+        // model's own wording (see findingMatching.ts). If the previous
+        // findings can't be read, record a failed model pass instead of
+        // saving findings that would misreport the comparison.
+        let planned;
+        try {
+          const priorFindings = await loadPriorFindings(
+            supabase,
+            report.previous_report_id,
+            "model_based"
+          );
+          planned = planFindingInserts(fresh, priorFindings);
+        } catch (error) {
+          console.error("[model-review] Comparison setup failed:", error);
+          await recordOutcome(supabase, reportId, failureFields("save_failed"));
+          return;
+        }
+
         const { error: insertError } = await supabase.from("findings").insert(
-          fresh.map((draft) => ({
+          planned.map(({ draft, carry }) => ({
             report_id: reportId,
             user_id: report.user_id,
             category: draft.category,
@@ -221,6 +243,7 @@ export async function executeModelReview(
             description: draft.description,
             evidence: draft.evidence,
             location: draft.location,
+            ...carry,
           }))
         );
         if (insertError) {

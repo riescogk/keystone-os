@@ -12,6 +12,10 @@ import {
   hasPdfMagicBytes,
 } from "@/lib/reports/validation";
 import { runTextExtraction } from "@/lib/extraction/runExtraction";
+import {
+  checkRevisionTarget,
+  isUuid,
+} from "@/lib/review/comparison/revisionEligibility";
 
 export type ActionResult =
   { success: true } | { success: false; error: string };
@@ -77,6 +81,47 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
     };
   }
 
+  // Phase 13 (PRD FR-5): an upload may be a revised draft of a report
+  // the user already had reviewed. Validated BEFORE anything is written
+  // to Storage, so a rejected revision can never leave an orphaned
+  // file. The previous report is looked up under the caller's own RLS
+  // session: someone else's report id arrives as "not found",
+  // indistinguishable from one that does not exist.
+  const revisesValue = formData.get("revisesReportId");
+  const revisesReportId =
+    typeof revisesValue === "string" ? revisesValue : null;
+
+  let target: { review_status: string; extraction_status: string } | null =
+    null;
+  let alreadyRevised = false;
+
+  if (revisesReportId?.trim() && isUuid(revisesReportId.trim())) {
+    const { data: previous } = await supabase
+      .from("reports")
+      .select("review_status, extraction_status")
+      .eq("id", revisesReportId.trim())
+      .maybeSingle();
+    target = previous ?? null;
+
+    if (target) {
+      const { data: existingRevision } = await supabase
+        .from("reports")
+        .select("id")
+        .eq("previous_report_id", revisesReportId.trim())
+        .limit(1);
+      alreadyRevised = (existingRevision?.length ?? 0) > 0;
+    }
+  }
+
+  const revision = checkRevisionTarget({
+    revisesReportId,
+    target,
+    alreadyRevised,
+  });
+  if (!revision.ok) {
+    return { success: false, error: revision.error };
+  }
+
   // Generate the report id ourselves (rather than letting the DB
   // default it) so the same id can be used for the storage path
   // before the row exists.
@@ -103,12 +148,25 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
     original_filename: file.name,
     storage_path: storagePath,
     file_size_bytes: file.size,
+    // Only sent for a revision, so ordinary uploads are unchanged.
+    ...(revision.previousReportId
+      ? { previous_report_id: revision.previousReportId }
+      : {}),
   });
 
   if (insertError) {
     // Roll back the orphaned storage object so a failed upload
     // doesn't silently consume storage with no visible record.
     await supabase.storage.from(REPORTS_BUCKET).remove([storagePath]);
+    if (insertError.code === "23505" && revision.previousReportId) {
+      // Unique index on previous_report_id: someone (another tab, a
+      // double submit) already uploaded this report's revision.
+      return {
+        success: false,
+        error:
+          "A revised draft of this report has already been uploaded. Upload your newest revision from the latest draft instead.",
+      };
+    }
     return {
       success: false,
       error: "Upload failed while saving the report record. Please try again.",

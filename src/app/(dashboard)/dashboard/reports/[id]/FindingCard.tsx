@@ -14,6 +14,7 @@ import {
   type FindingSeverity,
   type FindingStatus,
 } from "@/lib/review/types";
+import type { ComparisonLabel } from "@/lib/review/comparison/buildComparison";
 
 interface FindingCardProps {
   id: string;
@@ -25,7 +26,16 @@ interface FindingCardProps {
   evidence: string;
   location: string | null;
   dismissedReason: string | null;
+  /** Re-review only (PRD 8.5/8.7): how this finding relates to the previous draft. */
+  comparison?: ComparisonLabel;
 }
+
+const COMPARISON_LABEL: Record<ComparisonLabel, string> = {
+  new: "New in this draft",
+  still_open: "Still present",
+  still_open_evidence_changed: "Still present — evidence changed",
+  not_compared: "Not compared",
+};
 
 const SEVERITY_CLASSES: Record<FindingSeverity, string> = {
   critical: "border-red-200 bg-red-50",
@@ -57,6 +67,7 @@ export function FindingCard({
   evidence,
   location,
   dismissedReason,
+  comparison,
 }: FindingCardProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -124,6 +135,20 @@ export function FindingCard({
         ) : (
           <span className="text-xs text-slate-400">· Deterministic</span>
         )}
+        {comparison && (
+          <span
+            className={clsx(
+              "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
+              comparison === "new"
+                ? "bg-blue-100 text-blue-800"
+                : comparison === "still_open_evidence_changed"
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-slate-100 text-slate-600"
+            )}
+          >
+            {COMPARISON_LABEL[comparison]}
+          </span>
+        )}
         {status !== "open" && (
           <span className="ml-auto text-xs font-medium text-slate-500">
             {status === "acknowledged" ? "Acknowledged" : "Dismissed"}
@@ -139,6 +164,20 @@ export function FindingCard({
           Identified by a language model from the report text, not by an exact
           check. It may be mistaken or may have missed context — please verify
           against your report.
+        </p>
+      )}
+
+      {comparison === "still_open" && status !== "open" && (
+        <p className="text-xs text-slate-500">
+          You already {status === "dismissed" ? "dismissed" : "acknowledged"}{" "}
+          this in the previous draft and nothing about it has changed, so its
+          status was carried forward.
+        </p>
+      )}
+      {comparison === "still_open_evidence_changed" && (
+        <p className="text-xs text-amber-700">
+          This is the same kind of issue as in the previous draft, but the
+          evidence is different, so it is open again for you to review.
         </p>
       )}
 

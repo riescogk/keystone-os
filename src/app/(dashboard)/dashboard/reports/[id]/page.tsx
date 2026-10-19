@@ -8,6 +8,14 @@ import { FindingCard } from "@/app/(dashboard)/dashboard/reports/[id]/FindingCar
 import { ModelReviewPanel } from "@/app/(dashboard)/dashboard/reports/[id]/ModelReviewPanel";
 import { isClaimable } from "@/lib/review/model/runModelReview";
 import { isExportable } from "@/lib/export/findingsReportData";
+import { ComparisonSummary } from "@/app/(dashboard)/dashboard/reports/[id]/ComparisonSummary";
+import { ResolvedFindingCard } from "@/app/(dashboard)/dashboard/reports/[id]/ResolvedFindingCard";
+import {
+  buildComparison,
+  isChange,
+  type ComparableFinding,
+  type ComparisonResult,
+} from "@/lib/review/comparison/buildComparison";
 import type {
   FindingSeverity,
   ModelReviewFailureReason,
@@ -34,6 +42,34 @@ const SEVERITY_ORDER: Record<FindingSeverity, number> = {
 
 interface ReportPageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ view?: string | string[] }>;
+}
+
+/** Maps a findings row (untyped Supabase result) to the comparison input shape. */
+function toComparable(row: {
+  id: string;
+  category: string;
+  severity: string;
+  confidence: string;
+  status: string;
+  description: string;
+  evidence: string;
+  location: string | null;
+  dismissed_reason: string | null;
+  carried_forward_from: string | null;
+}): ComparableFinding {
+  return {
+    id: row.id,
+    category: row.category,
+    severity: row.severity as FindingSeverity,
+    confidence: row.confidence as ComparableFinding["confidence"],
+    status: row.status as ComparableFinding["status"],
+    description: row.description,
+    evidence: row.evidence,
+    location: row.location,
+    dismissedReason: row.dismissed_reason,
+    carriedForwardFrom: row.carried_forward_from,
+  };
 }
 
 /**
@@ -44,8 +80,12 @@ interface ReportPageProps {
  * inline per finding via FindingCard. Re-review comparison (Section
  * 8.7, FR-5) and export (FR-6) are later phases.
  */
-export default async function ReportPage({ params }: ReportPageProps) {
+export default async function ReportPage({
+  params,
+  searchParams,
+}: ReportPageProps) {
   const { id } = await params;
+  const query = await searchParams;
   const supabase = await createClient();
 
   // RLS scopes this to reports the caller owns; a report id belonging
@@ -53,7 +93,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
   const { data: report, error: reportError } = await supabase
     .from("reports")
     .select(
-      "id, original_filename, created_at, page_count, extraction_status, review_status, model_review_status, model_review_error, model_review_started_at"
+      "id, original_filename, created_at, page_count, extraction_status, review_status, review_completed_at, review_version, previous_report_id, model_review_status, model_review_error, model_review_started_at"
     )
     .eq("id", id)
     .single();
@@ -65,7 +105,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
   const { data: findings } = await supabase
     .from("findings")
     .select(
-      "id, category, severity, confidence, status, description, evidence, location, dismissed_reason"
+      "id, category, severity, confidence, status, description, evidence, location, dismissed_reason, carried_forward_from"
     )
     .eq("report_id", id)
     .order("created_at", { ascending: true });
@@ -75,6 +115,75 @@ export default async function ReportPage({ params }: ReportPageProps) {
       SEVERITY_ORDER[a.severity as FindingSeverity] -
       SEVERITY_ORDER[b.severity as FindingSeverity]
   );
+
+  // Phase 13 (PRD FR-5): is this report superseded by a revised draft?
+  // Derived from the revision link, never stored (PRD Section 15).
+  const { data: supersededBy } = await supabase
+    .from("reports")
+    .select("id, original_filename")
+    .eq("previous_report_id", id)
+    .maybeSingle();
+
+  // If this report IS a revised draft, compare it with the previous
+  // review (PRD 8.7). Any failure falls back to the plain findings view
+  // with a visible note — comparison must never block the screen.
+  let comparison: ComparisonResult | null = null;
+  let comparisonUnavailable = false;
+  let previousReport: {
+    id: string;
+    original_filename: string;
+    review_completed_at: string | null;
+  } | null = null;
+
+  if (report.previous_report_id && report.review_status === "complete") {
+    const [{ data: previous, error: previousError }, previousFindingsResult] =
+      await Promise.all([
+        supabase
+          .from("reports")
+          .select(
+            "id, original_filename, review_completed_at, review_version, model_review_status"
+          )
+          .eq("id", report.previous_report_id)
+          .single(),
+        supabase
+          .from("findings")
+          .select(
+            "id, category, severity, confidence, status, description, evidence, location, dismissed_reason, carried_forward_from"
+          )
+          .eq("report_id", report.previous_report_id),
+      ]);
+
+    if (previousError || !previous || previousFindingsResult.error) {
+      comparisonUnavailable = true;
+    } else {
+      previousReport = previous;
+      comparison = buildComparison(
+        {
+          findings: (findings ?? []).map(toComparable),
+          reviewVersion: report.review_version,
+          modelReviewStatus: report.model_review_status as ModelReviewStatus,
+        },
+        {
+          findings: (previousFindingsResult.data ?? []).map(toComparable),
+          reviewVersion: previous.review_version,
+          modelReviewStatus: previous.model_review_status as ModelReviewStatus,
+        }
+      );
+    }
+  }
+
+  const view: "all" | "changes" =
+    comparison &&
+    (Array.isArray(query.view) ? query.view[0] : query.view) === "changes"
+      ? "changes"
+      : "all";
+  const visibleFindings =
+    view === "changes" && comparison
+      ? sortedFindings.filter((finding) =>
+          isChange(comparison.labels[finding.id])
+        )
+      : sortedFindings;
+  const hiddenUnchangedCount = sortedFindings.length - visibleFindings.length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -121,7 +230,33 @@ export default async function ReportPage({ params }: ReportPageProps) {
             </a>
           </div>
         )}
+        {/* PRD FR-5: re-review a revised draft. Offered from the latest
+            draft only (a report can be revised once; revisions form a
+            chain), and only once its review has finished. */}
+        {isExportable(report) && !supersededBy && (
+          <div className="mt-1">
+            <Link
+              href={`/dashboard/new?revises=${report.id}`}
+              className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
+            >
+              Upload a revised draft
+            </Link>
+          </div>
+        )}
       </div>
+
+      {supersededBy && (
+        <StatusNotice>
+          This draft has been superseded by a revised draft:{" "}
+          <Link
+            href={`/dashboard/reports/${supersededBy.id}`}
+            className="underline"
+          >
+            {supersededBy.original_filename}
+          </Link>
+          . This report and its findings are kept unchanged for your records.
+        </StatusNotice>
+      )}
 
       {report.extraction_status === "ocr_required" && (
         <StatusNotice>
@@ -163,6 +298,25 @@ export default async function ReportPage({ params }: ReportPageProps) {
             </StatusNotice>
           )}
 
+          {comparisonUnavailable && (
+            <StatusNotice>
+              Comparison with the previous draft is temporarily unavailable.
+              Your findings for this draft are shown below.
+            </StatusNotice>
+          )}
+
+          {comparison && previousReport && (
+            <ComparisonSummary
+              reportId={report.id}
+              previousReportId={previousReport.id}
+              previousFileName={previousReport.original_filename}
+              previousReviewedAt={previousReport.review_completed_at}
+              comparison={comparison}
+              view={view}
+              hiddenUnchangedCount={hiddenUnchangedCount}
+            />
+          )}
+
           {report.review_status === "complete" &&
             sortedFindings.length === 0 && (
               <StatusNotice tone="success">
@@ -172,23 +326,63 @@ export default async function ReportPage({ params }: ReportPageProps) {
               </StatusNotice>
             )}
 
-          {report.review_status === "complete" && sortedFindings.length > 0 && (
-            <ul className="flex flex-col gap-3">
-              {sortedFindings.map((finding) => (
-                <FindingCard
-                  key={finding.id}
-                  id={finding.id}
-                  category={finding.category}
-                  severity={finding.severity}
-                  confidence={finding.confidence}
-                  status={finding.status}
-                  description={finding.description}
-                  evidence={finding.evidence}
-                  location={finding.location}
-                  dismissedReason={finding.dismissed_reason}
-                />
-              ))}
-            </ul>
+          {report.review_status === "complete" &&
+            visibleFindings.length > 0 && (
+              <ul className="flex flex-col gap-3">
+                {visibleFindings.map((finding) => (
+                  <FindingCard
+                    key={finding.id}
+                    id={finding.id}
+                    category={finding.category}
+                    severity={finding.severity}
+                    confidence={finding.confidence}
+                    status={finding.status}
+                    description={finding.description}
+                    evidence={finding.evidence}
+                    location={finding.location}
+                    dismissedReason={finding.dismissed_reason}
+                    comparison={comparison?.labels[finding.id]}
+                  />
+                ))}
+              </ul>
+            )}
+
+          {comparison &&
+            view === "changes" &&
+            visibleFindings.length === 0 &&
+            comparison.resolved.length === 0 && (
+              <StatusNotice>
+                Nothing changed since the previous draft: every finding is still
+                present and unchanged.
+              </StatusNotice>
+            )}
+
+          {comparison && comparison.resolved.length > 0 && (
+            <section
+              aria-labelledby="resolved-heading"
+              className="flex flex-col gap-3"
+            >
+              <h2
+                id="resolved-heading"
+                className="text-sm font-semibold text-slate-900"
+              >
+                Resolved since the previous draft ({comparison.resolved.length})
+              </h2>
+              <ul className="flex flex-col gap-3">
+                {comparison.resolved.map((finding) => (
+                  <ResolvedFindingCard
+                    key={finding.id}
+                    category={finding.category}
+                    severity={finding.severity}
+                    confidence={finding.confidence}
+                    status={finding.status}
+                    description={finding.description}
+                    evidence={finding.evidence}
+                    dismissedReason={finding.dismissedReason}
+                  />
+                ))}
+              </ul>
+            </section>
           )}
 
           {/* Phase 11: the optional model-based layer. Shown only once the

@@ -6,6 +6,8 @@ import { checkTypoAndFormattingIssues } from "@/lib/review/typoFormattingCheck";
 import { checkMissingSupportingDocumentation } from "@/lib/review/missingDocumentationCheck";
 import { checkArithmeticVerification } from "@/lib/review/arithmeticVerificationCheck";
 import { runModelReview } from "@/lib/review/model/runModelReview";
+import { loadPriorFindings } from "@/lib/review/comparison/loadPriorFindings";
+import { planFindingInserts } from "@/lib/review/comparison/findingMatching";
 import { REVIEW_VERSION } from "@/lib/review/types";
 
 /**
@@ -35,7 +37,9 @@ export async function runReview(reportId: string): Promise<void> {
 
   const { data: report, error: fetchError } = await supabase
     .from("reports")
-    .select("user_id, extraction_status, extracted_text, review_status")
+    .select(
+      "user_id, extraction_status, extracted_text, review_status, previous_report_id"
+    )
     .eq("id", reportId)
     .single();
 
@@ -91,8 +95,30 @@ export async function runReview(reportId: string): Promise<void> {
     ];
 
     if (findingDrafts.length > 0) {
-      const { error: insertError } = await supabase.from("findings").insert(
+      // Phase 13 (PRD FR-5): if this report is a revised draft, match
+      // each new finding against the previous review's deterministic
+      // findings. A finding that continues keeps a link to it and, when
+      // its evidence is unchanged, the user's earlier acknowledge/
+      // dismiss decision (PRD 17). With no previous review this is a
+      // no-op and every finding is simply new, exactly as before.
+      // loadPriorFindings throws if the previous findings can't be read,
+      // which fails this review rather than storing misleading
+      // "all new" results.
+      const priorFindings = await loadPriorFindings(
+        supabase,
+        report.previous_report_id,
+        "deterministic"
+      );
+      const planned = planFindingInserts(
         findingDrafts.map((draft) => ({
+          ...draft,
+          confidence: "deterministic" as const,
+        })),
+        priorFindings
+      );
+
+      const { error: insertError } = await supabase.from("findings").insert(
+        planned.map(({ draft, carry }) => ({
           report_id: reportId,
           user_id: report.user_id,
           category: draft.category,
@@ -101,6 +127,7 @@ export async function runReview(reportId: string): Promise<void> {
           description: draft.description,
           evidence: draft.evidence,
           location: draft.location,
+          ...carry,
         }))
       );
 

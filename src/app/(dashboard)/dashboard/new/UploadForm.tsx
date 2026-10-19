@@ -12,7 +12,12 @@ import {
   formatFileSize,
 } from "@/lib/reports/validation";
 
-export function UploadForm() {
+interface UploadFormProps {
+  /** Set when this upload is a revised draft of an already-reviewed report (PRD FR-5). */
+  revisesReportId?: string;
+}
+
+export function UploadForm({ revisesReportId }: UploadFormProps = {}) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -60,6 +65,10 @@ export function UploadForm() {
 
     const formData = new FormData();
     formData.set("file", selectedFile);
+    if (revisesReportId) {
+      // The server action re-validates this (it is the one that enforces it).
+      formData.set("revisesReportId", revisesReportId);
+    }
 
     const result = await uploadReport(formData);
 

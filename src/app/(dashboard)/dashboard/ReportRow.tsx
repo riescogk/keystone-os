@@ -24,6 +24,10 @@ interface ReportRowProps {
   createdAt: string;
   extractionStatus: ExtractionStatus;
   reviewStatus: ReviewStatus;
+  /** This report is a revised draft of an earlier one (PRD FR-5). */
+  isRevision?: boolean;
+  /** A revised draft of this report has since been uploaded (PRD Section 15). */
+  isSuperseded?: boolean;
 }
 
 const POLL_INTERVAL_MS = 4000;
@@ -35,6 +39,8 @@ export function ReportRow({
   createdAt,
   extractionStatus,
   reviewStatus,
+  isRevision = false,
+  isSuperseded = false,
 }: ReportRowProps) {
   const router = useRouter();
   const [isOpening, setIsOpening] = useState(false);
@@ -99,6 +105,16 @@ export function ReportRow({
           <ExtractionStatusBadge status={extractionStatus} />
           {extractionStatus === "completed" && (
             <ReviewStatusBadge status={reviewStatus} />
+          )}
+          {isRevision && (
+            <span className="inline-flex items-center rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-medium text-indigo-700">
+              Revised draft
+            </span>
+          )}
+          {isSuperseded && (
+            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+              Superseded
+            </span>
           )}
         </div>
         <p className="text-xs text-slate-500">
