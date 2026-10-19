@@ -20,7 +20,8 @@ export type FindingCategory =
   | "template_leftover_detection"
   | "typo_and_formatting_inconsistency"
   | "missing_supporting_documentation"
-  | "internal_arithmetic_verification";
+  | "internal_arithmetic_verification"
+  | "narrative_data_contradiction";
 
 /** PRD Section 19 — fixed, permanent three-level taxonomy. */
 export type FindingSeverity = "critical" | "moderate" | "low";
@@ -54,6 +55,7 @@ export const FINDING_CATEGORY_LABEL: Record<FindingCategory, string> = {
   typo_and_formatting_inconsistency: "Typo & Formatting Inconsistency",
   missing_supporting_documentation: "Missing Supporting Documentation",
   internal_arithmetic_verification: "Internal Arithmetic Verification",
+  narrative_data_contradiction: "Narrative-to-Data Contradiction",
 };
 
 export const FINDING_SEVERITY_LABEL: Record<FindingSeverity, string> = {
@@ -75,4 +77,32 @@ export interface FindingDraft {
   description: string;
   evidence: string;
   location: string;
+}
+
+/**
+ * Lifecycle of the OPTIONAL model-based review stage (Phase 11).
+ * Independent of ReviewStatus: a model failure never changes the
+ * deterministic review's outcome. "unavailable" means no model
+ * provider is configured on the server.
+ */
+export type ModelReviewStatus =
+  "not_run" | "processing" | "complete" | "failed" | "unavailable";
+
+/** Short reason codes stored in reports.model_review_error (see migration 0011). */
+export type ModelReviewFailureReason =
+  | "not_configured"
+  | "timeout"
+  | "provider_error"
+  | "refused"
+  | "incomplete"
+  | "invalid_output"
+  | "save_failed";
+
+export const IN_PROGRESS_MODEL_REVIEW_STATUSES: readonly ModelReviewStatus[] = [
+  "processing",
+];
+
+/** A model-based check's proposed finding. Confidence is fixed, never inferred. */
+export interface ModelFindingDraft extends FindingDraft {
+  confidence: "model_based";
 }

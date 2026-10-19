@@ -91,11 +91,18 @@ export function FindingCard({
     router.refresh();
   }
 
+  const isModelBased = confidence === "model_based";
+
   return (
     <li
       className={clsx(
         "flex flex-col gap-3 rounded-lg border px-5 py-4",
-        SEVERITY_CLASSES[severity]
+        // PRD Section 20: a model-based finding must never carry the
+        // same visual certainty as a deterministic one — dashed border
+        // and a distinct tint, regardless of severity.
+        isModelBased
+          ? "border-dashed border-indigo-300 bg-indigo-50/60"
+          : SEVERITY_CLASSES[severity]
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -110,9 +117,13 @@ export function FindingCard({
         <span className="text-xs text-slate-500">
           {FINDING_CATEGORY_LABEL[category]}
         </span>
-        <span className="text-xs text-slate-400">
-          · {confidence === "deterministic" ? "Deterministic" : "Model-based"}
-        </span>
+        {isModelBased ? (
+          <span className="inline-flex items-center rounded-full border border-indigo-300 bg-white px-2.5 py-0.5 text-xs font-medium text-indigo-700">
+            Model-based · possible conflict
+          </span>
+        ) : (
+          <span className="text-xs text-slate-400">· Deterministic</span>
+        )}
         {status !== "open" && (
           <span className="ml-auto text-xs font-medium text-slate-500">
             {status === "acknowledged" ? "Acknowledged" : "Dismissed"}
@@ -123,6 +134,13 @@ export function FindingCard({
       <p className="text-sm text-slate-900">{description}</p>
       <p className="text-sm text-slate-600">{evidence}</p>
       {location && <p className="text-xs text-slate-400">{location}</p>}
+      {isModelBased && (
+        <p className="text-xs text-indigo-700">
+          Identified by a language model from the report text, not by an exact
+          check. It may be mistaken or may have missed context — please verify
+          against your report.
+        </p>
+      )}
 
       {status === "dismissed" && dismissedReason && (
         <p className="rounded-md bg-white/60 px-3 py-2 text-xs text-slate-600">

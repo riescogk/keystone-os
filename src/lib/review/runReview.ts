@@ -5,6 +5,7 @@ import { checkTemplateLeftovers } from "@/lib/review/templateLeftoverCheck";
 import { checkTypoAndFormattingIssues } from "@/lib/review/typoFormattingCheck";
 import { checkMissingSupportingDocumentation } from "@/lib/review/missingDocumentationCheck";
 import { checkArithmeticVerification } from "@/lib/review/arithmeticVerificationCheck";
+import { runModelReview } from "@/lib/review/model/runModelReview";
 import { REVIEW_VERSION } from "@/lib/review/types";
 
 /**
@@ -74,6 +75,11 @@ export async function runReview(reportId: string): Promise<void> {
 
   await markStatus({ review_status: "processing" });
 
+  // Set only once the DETERMINISTIC review has fully completed. The
+  // optional model-based stage below is gated on this, and runs outside
+  // the try/catch so nothing it does can ever mark this review failed.
+  let deterministicReviewComplete = false;
+
   try {
     const pages = splitPagesFromStorage(report.extracted_text);
     const findingDrafts = [
@@ -108,6 +114,7 @@ export async function runReview(reportId: string): Promise<void> {
       review_completed_at: new Date().toISOString(),
       review_version: REVIEW_VERSION,
     });
+    deterministicReviewComplete = true;
   } catch (error) {
     console.error(`[review] Review failed for report ${reportId}:`, error);
     await markStatus({
@@ -115,5 +122,15 @@ export async function runReview(reportId: string): Promise<void> {
       review_completed_at: new Date().toISOString(),
       review_version: REVIEW_VERSION,
     });
+  }
+
+  // Phase 11: the optional model-based layer supplements a finished
+  // deterministic review (PRD Section 13). runModelReview never throws,
+  // records its own outcome in the separate model_review_* columns, and
+  // never touches review_status or any deterministic finding — so an
+  // outage, timeout, bad response, or missing API key leaves everything
+  // above exactly as it is.
+  if (deterministicReviewComplete) {
+    await runModelReview(reportId, "auto");
   }
 }

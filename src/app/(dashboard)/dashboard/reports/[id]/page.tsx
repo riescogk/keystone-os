@@ -5,7 +5,21 @@ import { createClient } from "@/lib/supabase/server";
 import { ExtractionStatusBadge } from "@/components/reports/ExtractionStatusBadge";
 import { ReviewStatusBadge } from "@/components/reports/ReviewStatusBadge";
 import { FindingCard } from "@/app/(dashboard)/dashboard/reports/[id]/FindingCard";
-import type { FindingSeverity } from "@/lib/review/types";
+import { ModelReviewPanel } from "@/app/(dashboard)/dashboard/reports/[id]/ModelReviewPanel";
+import { isClaimable } from "@/lib/review/model/runModelReview";
+import type {
+  FindingSeverity,
+  ModelReviewFailureReason,
+  ModelReviewStatus,
+} from "@/lib/review/types";
+
+/**
+ * The model-based stage can run after this page triggers it (the
+ * "Run model-based checks" action). Allow the invocation enough time
+ * for one provider call (30s timeout) with headroom; 60s is accepted
+ * on every Vercel plan.
+ */
+export const maxDuration = 60;
 
 export const metadata = {
   title: "Report — Keystone OS",
@@ -38,7 +52,7 @@ export default async function ReportPage({ params }: ReportPageProps) {
   const { data: report, error: reportError } = await supabase
     .from("reports")
     .select(
-      "id, original_filename, created_at, page_count, extraction_status, review_status"
+      "id, original_filename, created_at, page_count, extraction_status, review_status, model_review_status, model_review_error, model_review_started_at"
     )
     .eq("id", id)
     .single();
@@ -136,9 +150,9 @@ export default async function ReportPage({ params }: ReportPageProps) {
           {report.review_status === "complete" &&
             sortedFindings.length === 0 && (
               <StatusNotice tone="success">
-                No issues found by the automated review. (Note: this version
-                only checks cross-document identity consistency — client name,
-                property address, and effective date. More checks are planned.)
+                The deterministic checks found no issues. This is not a
+                guarantee that the report has none — only the specific checks
+                Keystone runs were applied.
               </StatusNotice>
             )}
 
@@ -159,6 +173,23 @@ export default async function ReportPage({ params }: ReportPageProps) {
                 />
               ))}
             </ul>
+          )}
+
+          {/* Phase 11: the optional model-based layer. Shown only once the
+              deterministic review is complete, since it supplements it. */}
+          {report.review_status === "complete" && (
+            <ModelReviewPanel
+              reportId={report.id}
+              status={report.model_review_status as ModelReviewStatus}
+              failureReason={
+                report.model_review_error as ModelReviewFailureReason | null
+              }
+              canRun={isClaimable(
+                report.model_review_status as ModelReviewStatus,
+                report.model_review_started_at,
+                "manual"
+              )}
+            />
           )}
         </>
       )}
