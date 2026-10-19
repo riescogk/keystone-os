@@ -8,14 +8,16 @@
     "start": "next start",
     "lint": "eslint",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.110.2",
     "exceljs": "^4.4.0",
-    "next": "16.2.10",
-    "openai": "^7.39.0",
+    "jspdf": "^4.2.1",
+    "next": "16.4.1",
+    "openai": "^7.32.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "unpdf": "^1.6.2"
@@ -26,10 +28,11 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.10",
+    "eslint-config-next": "16.4.1",
     "prettier": "^3.9.5",
     "prettier-plugin-tailwindcss": "^0.8.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

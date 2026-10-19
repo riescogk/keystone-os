@@ -7,6 +7,7 @@ import { ReviewStatusBadge } from "@/components/reports/ReviewStatusBadge";
 import { FindingCard } from "@/app/(dashboard)/dashboard/reports/[id]/FindingCard";
 import { ModelReviewPanel } from "@/app/(dashboard)/dashboard/reports/[id]/ModelReviewPanel";
 import { isClaimable } from "@/lib/review/model/runModelReview";
+import { isExportable } from "@/lib/export/findingsReportData";
 import type {
   FindingSeverity,
   ModelReviewFailureReason,
@@ -105,6 +106,21 @@ export default async function ReportPage({ params }: ReportPageProps) {
           })}
           {report.page_count ? ` · ${report.page_count} pages` : ""}
         </p>
+        {/* PRD Section 23 / FR-6: standalone findings report (PDF). Only
+            offered once the review is complete. A plain anchor (not
+            next/link) so it is a real file download, never prefetched. */}
+        {isExportable(report) && (
+          <div className="mt-1">
+            <a
+              href={`/dashboard/reports/${report.id}/export`}
+              download
+              aria-label={`Export findings report for ${report.original_filename} as a PDF`}
+              className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 transition-colors hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400"
+            >
+              Export findings report (PDF)
+            </a>
+          </div>
+        )}
       </div>
 
       {report.extraction_status === "ocr_required" && (
