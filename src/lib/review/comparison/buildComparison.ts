@@ -4,6 +4,7 @@ import type {
   FindingStatus,
   ModelReviewStatus,
 } from "@/lib/review/types";
+import type { SourceCheckStatus } from "@/lib/review/provenance";
 import { evidenceFingerprint } from "@/lib/review/comparison/findingMatching";
 
 /**
@@ -39,6 +40,11 @@ export interface ComparableReview {
   findings: ComparableFinding[];
   reviewVersion: string | null;
   modelReviewStatus: ModelReviewStatus;
+  /**
+   * Milestone 14: state of the optional source-workbook check. Optional so
+   * that reviews without the field behave exactly as before ("none").
+   */
+  sourceCheckStatus?: SourceCheckStatus;
 }
 
 export type ComparisonLabel =
@@ -72,9 +78,24 @@ export function buildComparison(
     current.modelReviewStatus === "complete" &&
     previous.modelReviewStatus === "complete";
 
+  // Same rule for the source-workbook cross-check: its findings can only be
+  // called new or resolved when the check actually ran in BOTH reviews.
+  const sourceComparable =
+    current.sourceCheckStatus === "complete" &&
+    previous.sourceCheckStatus === "complete";
+
   if (!modelComparable) {
     notes.push(
       "Model-based findings were not compared: the optional model-based pass did not complete in both reviews, so a missing finding cannot be taken to mean a fixed one."
+    );
+  }
+
+  const involvesSourceCheck =
+    current.findings.some((f) => f.category === SOURCE_CATEGORY) ||
+    previous.findings.some((f) => f.category === SOURCE_CATEGORY);
+  if (involvesSourceCheck && !sourceComparable) {
+    notes.push(
+      "Source-workbook cross-checks were not compared: the source workbook was not checked in both reviews, so a missing cross-check finding cannot be taken to mean a fixed one."
     );
   }
 
@@ -115,7 +136,10 @@ export function buildComparison(
       continue;
     }
 
-    if (finding.confidence === "model_based" && !modelComparable) {
+    if (
+      (finding.confidence === "model_based" && !modelComparable) ||
+      (finding.category === SOURCE_CATEGORY && !sourceComparable)
+    ) {
       labels[finding.id] = "not_compared";
       notCompared += 1;
       continue;
@@ -128,6 +152,7 @@ export function buildComparison(
   const resolved = previous.findings.filter((finding) => {
     if (carriedIds.has(finding.id)) return false;
     if (finding.confidence === "model_based" && !modelComparable) return false;
+    if (finding.category === SOURCE_CATEGORY && !sourceComparable) return false;
     return true;
   });
 
@@ -144,6 +169,8 @@ export function buildComparison(
     notes,
   };
 }
+
+const SOURCE_CATEGORY = "source_workbook_discrepancy";
 
 /** The "Changes only" view hides findings that are unchanged carry-overs. */
 export function isChange(label: ComparisonLabel | undefined): boolean {

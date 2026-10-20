@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { DELETE_ACCOUNT_CONFIRMATION } from "@/lib/account/constants";
 import { removeAllUserFiles } from "@/lib/account/removeUserFiles";
+import { WORKBOOK_BUCKET } from "@/lib/review/source/workbookFile";
+import { REPORTS_BUCKET } from "@/lib/reports/validation";
 import type { ActionResult } from "@/lib/reports/actions";
 
 const NOT_DELETED_MESSAGE =
@@ -51,7 +53,17 @@ export async function deleteAccount(
     return { success: false, error: "You must be logged in." };
   }
 
-  const filesRemoved = await removeAllUserFiles(supabase, user.id);
+  // Both buckets the application writes to. The database function refuses
+  // deletion while either still holds the user's files (migrations 0010, 0013).
+  const reportFilesRemoved = await removeAllUserFiles(
+    supabase,
+    user.id,
+    REPORTS_BUCKET
+  );
+  const workbookFilesRemoved = reportFilesRemoved
+    ? await removeAllUserFiles(supabase, user.id, WORKBOOK_BUCKET)
+    : false;
+  const filesRemoved = reportFilesRemoved && workbookFilesRemoved;
   if (!filesRemoved) {
     return { success: false, error: NOT_DELETED_MESSAGE };
   }

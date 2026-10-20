@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { REPORTS_BUCKET } from "@/lib/reports/validation";
+import { WORKBOOK_BUCKET } from "@/lib/review/source/workbookFile";
 
 /** Storage API page size for listing the user's folder. */
 export const LIST_PAGE_SIZE = 100;
@@ -17,6 +18,9 @@ export const MAX_REMOVE_ROUNDS = 100;
  * objects with no matching row — e.g. left behind by an earlier
  * partial failure — are removed too. Safe to call repeatedly.
  *
+ * Called once per bucket the application writes to: the reports bucket and,
+ * since Milestone 14, the review-workbooks bucket.
+ *
  * Returns true only when the folder was confirmed empty. Returns
  * false on any error, on a removal that confirmed fewer objects than
  * requested (which would otherwise loop forever), or when the round
@@ -24,9 +28,10 @@ export const MAX_REMOVE_ROUNDS = 100;
  */
 export async function removeAllUserFiles(
   supabase: SupabaseClient,
-  userId: string
+  userId: string,
+  bucketName: string = REPORTS_BUCKET
 ): Promise<boolean> {
-  const bucket = supabase.storage.from(REPORTS_BUCKET);
+  const bucket = supabase.storage.from(bucketName);
 
   for (let round = 0; round < MAX_REMOVE_ROUNDS; round++) {
     const { data: files, error: listError } = await bucket.list(userId, {

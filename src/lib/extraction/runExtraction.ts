@@ -6,6 +6,7 @@ import {
 } from "@/lib/extraction/pdfTextExtractor";
 import { EXTRACTION_VERSION } from "@/lib/extraction/types";
 import { runReview } from "@/lib/review/runReview";
+import { extractDocText } from "@/lib/extraction/docTextExtractor";
 
 /**
  * Runs text extraction for a single report and writes the outcome
@@ -78,27 +79,40 @@ export async function runTextExtraction(reportId: string): Promise<void> {
       );
     }
 
-    const buffer = new Uint8Array(await fileBlob.arrayBuffer());
-    const { pageCount, pages, hasSelectableText } =
-      await extractPdfText(buffer);
+const buffer = new Uint8Array(await fileBlob.arrayBuffer());
 
-    if (!hasSelectableText) {
-      await markStatus({
-        extraction_status: "ocr_required",
-        page_count: pageCount,
-        extraction_completed_at: new Date().toISOString(),
-        extraction_version: EXTRACTION_VERSION,
-      });
-      return;
-    }
+if (report.storage_path.toLowerCase().endsWith(".doc")) {
+const { text } = await extractDocText(buffer);
 
+await markStatus({
+  extraction_status: "completed",
+  extracted_text: text,
+  page_count: null,
+  extraction_completed_at: new Date().toISOString(),
+  extraction_version: EXTRACTION_VERSION,
+});
+} else {
+  const { pageCount, pages, hasSelectableText } =
+    await extractPdfText(buffer);
+
+  if (!hasSelectableText) {
     await markStatus({
-      extraction_status: "completed",
-      extracted_text: joinPagesForStorage(pages),
+      extraction_status: "ocr_required",
       page_count: pageCount,
       extraction_completed_at: new Date().toISOString(),
       extraction_version: EXTRACTION_VERSION,
     });
+    return;
+  }
+
+  await markStatus({
+    extraction_status: "completed",
+    extracted_text: joinPagesForStorage(pages),
+    page_count: pageCount,
+    extraction_completed_at: new Date().toISOString(),
+    extraction_version: EXTRACTION_VERSION,
+  });
+}
 
     // Review (Phase 5) has a hard dependency on extracted text, so it
     // runs as the next stage of this same background pipeline rather

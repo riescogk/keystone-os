@@ -12,6 +12,10 @@ import type {
   ModelReviewFailureReason,
   ModelReviewStatus,
 } from "@/lib/review/types";
+import { openZipArchive } from "@/lib/review/source/zipArchive";
+import { readWorkbookModel } from "@/lib/review/source/workbookModel";
+import { WORKBOOK_BUCKET, type WorkbookFormat } from "@/lib/review/source/workbookFile";
+import { runSourceModelInvestigation, SOURCE_MODEL_CHECK_VERSION } from "@/lib/review/source/modelInvestigation";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -188,6 +192,33 @@ export async function executeModelReview(
       return;
     }
 
+    // Milestone 14 v2: optional, bounded source-workbook model investigation.
+    // It is deliberately isolated: workbook/model-source failures never fail
+    // the normal narrative model review and never change deterministic review.
+    let sourceModelFindings = [] as typeof result.findings;
+    try {
+      const { data: sourceRow } = await supabase
+        .from("report_source_workbooks")
+        .select("original_filename, storage_path, workbook_format, check_status")
+        .eq("report_id", reportId)
+        .maybeSingle();
+      if (sourceRow && sourceRow.check_status === "complete") {
+        const { data: workbookBlob, error: downloadError } = await supabase.storage
+          .from(WORKBOOK_BUCKET)
+          .download(sourceRow.storage_path);
+        if (!downloadError && workbookBlob) {
+          const bytes = new Uint8Array(await workbookBlob.arrayBuffer());
+          const model = readWorkbookModel(openZipArchive(bytes), sourceRow.workbook_format as WorkbookFormat);
+          sourceModelFindings = await runSourceModelInvestigation(
+            pages, model, sourceRow.original_filename, resolvedProvider
+          );
+        }
+      }
+    } catch (error) {
+      console.info("[model-review] Optional source-workbook model investigation skipped:",
+        error instanceof Error ? error.name : "unknown");
+    }
+
     console.info("[model-review] Check finished:", {
       modelCalled: result.modelCalled,
       returned: result.stats.returned,
@@ -196,19 +227,21 @@ export async function executeModelReview(
       usage: result.usage,
     });
 
-    if (result.findings.length > 0) {
+    const combinedModelFindings = [...result.findings, ...sourceModelFindings];
+
+    if (combinedModelFindings.length > 0) {
       // A stale-run recovery could re-run a check that had already
       // saved findings before dying; skip any already stored.
       const { data: existing } = await supabase
         .from("findings")
         .select("evidence")
         .eq("report_id", reportId)
-        .eq("category", "narrative_data_contradiction");
+        .in("category", ["narrative_data_contradiction", "source_workbook_discrepancy"]);
       const existingEvidence = new Set(
         (existing ?? []).map((row) => row.evidence)
       );
 
-      const fresh = result.findings.filter(
+      const fresh = combinedModelFindings.filter(
         (draft) => !existingEvidence.has(draft.evidence)
       );
 
@@ -243,6 +276,7 @@ export async function executeModelReview(
             description: draft.description,
             evidence: draft.evidence,
             location: draft.location,
+            source_reference: draft.sourceReference ?? null,
             ...carry,
           }))
         );
@@ -258,7 +292,7 @@ export async function executeModelReview(
       model_review_status: "complete",
       model_review_error: null,
       model_review_completed_at: new Date().toISOString(),
-      model_review_version: `${NARRATIVE_CHECK_VERSION}:${resolvedProvider.modelId}`,
+      model_review_version: `${NARRATIVE_CHECK_VERSION}+${SOURCE_MODEL_CHECK_VERSION}:${resolvedProvider.modelId}`,
     });
   } catch (error) {
     console.error("[model-review] Unexpected failure:", error);

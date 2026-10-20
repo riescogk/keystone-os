@@ -5,17 +5,24 @@ import { after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
   MAX_FILE_SIZE_BYTES,
-  ALLOWED_MIME_TYPE,
   REPORTS_BUCKET,
   isAllowedFileSize,
   isAllowedMimeType,
-  hasPdfMagicBytes,
+  reportFormatFromFileName,
+  hasValidReportMagicBytes,
+  mimeTypeForReportFormat,
 } from "@/lib/reports/validation";
 import { runTextExtraction } from "@/lib/extraction/runExtraction";
 import {
   checkRevisionTarget,
   isUuid,
 } from "@/lib/review/comparison/revisionEligibility";
+import { checkWorkbookUpload } from "@/lib/review/source/workbookUpload";
+import {
+  WORKBOOK_BUCKET,
+  WORKBOOK_MIME_BY_FORMAT,
+  type WorkbookFormat,
+} from "@/lib/review/source/workbookFile";
 
 export type ActionResult =
   { success: true } | { success: false; error: string };
@@ -57,12 +64,14 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
     return { success: false, error: "No file was provided." };
   }
 
-  if (!isAllowedMimeType(file.type)) {
-    return {
-      success: false,
-      error: "Only PDF files are supported right now.",
-    };
-  }
+  const reportFormat = reportFormatFromFileName(file.name);
+
+if (!reportFormat || !isAllowedMimeType(file.type)) {
+  return {
+    success: false,
+    error: "Only PDF and Microsoft Word .doc files are supported.",
+  };
+}
 
   if (!isAllowedFileSize(file.size)) {
     return {
@@ -73,13 +82,15 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
 
   const buffer = new Uint8Array(await file.arrayBuffer());
 
-  if (!hasPdfMagicBytes(buffer)) {
-    return {
-      success: false,
-      error:
-        "This file doesn't look like a valid PDF. Please upload an unmodified PDF export.",
-    };
-  }
+  if (!hasValidReportMagicBytes(buffer, reportFormat)) {
+  return {
+    success: false,
+    error:
+      reportFormat === "pdf"
+        ? "This file doesn't look like a valid PDF."
+        : "This file doesn't look like a valid Microsoft Word .doc file.",
+  };
+}
 
   // Phase 13 (PRD FR-5): an upload may be a revised draft of a report
   // the user already had reviewed. Validated BEFORE anything is written
@@ -122,24 +133,78 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
     return { success: false, error: revision.error };
   }
 
+  // Milestone 14: the OPTIONAL source workbook. Validated here, before any
+  // write, so a rejected workbook never leaves an orphaned PDF behind. An
+  // empty file input arrives as a zero-byte File and means "no workbook".
+  const workbookValue = formData.get("workbook");
+  let workbook: {
+    file: File;
+    format: WorkbookFormat;
+    bytes: Uint8Array;
+    containsMacros: boolean;
+    externalLinkCount: number;
+  } | null = null;
+
+  if (workbookValue instanceof File && workbookValue.size > 0) {
+    const check = await checkWorkbookUpload(workbookValue);
+    if (!check.ok) {
+      return { success: false, error: check.message };
+    }
+    workbook = {
+      file: workbookValue,
+      format: check.format,
+      bytes: check.bytes,
+      containsMacros: check.containsMacros,
+      externalLinkCount: check.externalLinkCount,
+    };
+  }
+
   // Generate the report id ourselves (rather than letting the DB
   // default it) so the same id can be used for the storage path
   // before the row exists.
   const reportId = crypto.randomUUID();
-  const storagePath = `${user.id}/${reportId}.pdf`;
+  const storagePath = `${user.id}/${reportId}.${reportFormat}`;
+  const workbookPath = workbook
+    ? `${user.id}/${reportId}.${workbook.format}`
+    : null;
+
+  // Removes everything this request stored. Each removal is a no-op for an
+  // object that was never written, so this is safe at every failure point.
+  const removeStoredFiles = async () => {
+    await supabase.storage.from(REPORTS_BUCKET).remove([storagePath]);
+    if (workbookPath) {
+      await supabase.storage.from(WORKBOOK_BUCKET).remove([workbookPath]);
+    }
+  };
 
   const { error: uploadError } = await supabase.storage
     .from(REPORTS_BUCKET)
     .upload(storagePath, buffer, {
-      contentType: ALLOWED_MIME_TYPE,
+      contentType: mimeTypeForReportFormat(reportFormat),
       upsert: false,
     });
 
-  if (uploadError) {
-    return {
-      success: false,
-      error: "Upload failed. Please try again.",
-    };
+if (uploadError) {
+  return {
+    success: false,
+    error: "Upload failed. Please try again.",
+  };
+}
+
+  if (workbook && workbookPath) {
+    const { error: workbookUploadError } = await supabase.storage
+      .from(WORKBOOK_BUCKET)
+      .upload(workbookPath, workbook.bytes, {
+        contentType: WORKBOOK_MIME_BY_FORMAT[workbook.format],
+        upsert: false,
+      });
+    if (workbookUploadError) {
+      await removeStoredFiles();
+      return {
+        success: false,
+        error: "Upload failed. Please try again.",
+      };
+    }
   }
 
   const { error: insertError } = await supabase.from("reports").insert({
@@ -155,9 +220,9 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
   });
 
   if (insertError) {
-    // Roll back the orphaned storage object so a failed upload
+    // Roll back the orphaned storage objects so a failed upload
     // doesn't silently consume storage with no visible record.
-    await supabase.storage.from(REPORTS_BUCKET).remove([storagePath]);
+    await removeStoredFiles();
     if (insertError.code === "23505" && revision.previousReportId) {
       // Unique index on previous_report_id: someone (another tab, a
       // double submit) already uploaded this report's revision.
@@ -171,6 +236,32 @@ export async function uploadReport(formData: FormData): Promise<ActionResult> {
       success: false,
       error: "Upload failed while saving the report record. Please try again.",
     };
+  }
+
+  if (workbook && workbookPath) {
+    const { error: workbookInsertError } = await supabase
+      .from("report_source_workbooks")
+      .insert({
+        report_id: reportId,
+        user_id: user.id,
+        original_filename: workbook.file.name,
+        storage_path: workbookPath,
+        file_size_bytes: workbook.file.size,
+        workbook_format: workbook.format,
+        contains_macros: workbook.containsMacros,
+        external_link_count: workbook.externalLinkCount,
+      });
+
+    if (workbookInsertError) {
+      // The report must not exist without the workbook the user attached:
+      // undo both the storage objects and the report row.
+      await removeStoredFiles();
+      await supabase.from("reports").delete().eq("id", reportId);
+      return {
+        success: false,
+        error: "Upload failed while saving the workbook. Please try again.",
+      };
+    }
   }
 
   // Schedule text extraction to run after this response is sent, so
@@ -227,11 +318,11 @@ export async function getSignedReportUrl(
 }
 
 /**
- * Deletes a report the caller owns: the Storage object first, then
- * the database row. If the row delete fails after the object is
- * already gone, the user sees an error and can retry — retrying is
- * safe because removing an already-removed Storage object is a no-op,
- * not an error.
+ * Deletes a report the caller owns: its stored files first (the PDF and,
+ * if one was attached, the source workbook), then the database row. If the
+ * row delete fails after the files are gone, the user sees an error and can
+ * retry — retrying is safe because removing an already-removed Storage
+ * object is a no-op, not an error.
  */
 export async function deleteReport(reportId: string): Promise<ActionResult> {
   const supabase = await createClient();
@@ -252,6 +343,26 @@ export async function deleteReport(reportId: string): Promise<ActionResult> {
 
   if (fetchError || !report) {
     return { success: false, error: "Report not found." };
+  }
+
+  // Milestone 14: the optional workbook is removed with its report, so
+  // deleting a report can never orphan a workbook file.
+  const { data: workbook } = await supabase
+    .from("report_source_workbooks")
+    .select("storage_path")
+    .eq("report_id", reportId)
+    .maybeSingle();
+
+  if (workbook) {
+    const { error: workbookRemoveError } = await supabase.storage
+      .from(WORKBOOK_BUCKET)
+      .remove([workbook.storage_path]);
+    if (workbookRemoveError) {
+      return {
+        success: false,
+        error: "Could not delete the stored file. Please try again.",
+      };
+    }
   }
 
   const { error: removeError } = await supabase.storage

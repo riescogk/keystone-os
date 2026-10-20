@@ -5,6 +5,7 @@ import { checkTemplateLeftovers } from "@/lib/review/templateLeftoverCheck";
 import { checkTypoAndFormattingIssues } from "@/lib/review/typoFormattingCheck";
 import { checkMissingSupportingDocumentation } from "@/lib/review/missingDocumentationCheck";
 import { checkArithmeticVerification } from "@/lib/review/arithmeticVerificationCheck";
+import { runSourceWorkbookCheckForReport } from "@/lib/review/source/sourceCheckEntry";
 import { runModelReview } from "@/lib/review/model/runModelReview";
 import { loadPriorFindings } from "@/lib/review/comparison/loadPriorFindings";
 import { planFindingInserts } from "@/lib/review/comparison/findingMatching";
@@ -86,12 +87,19 @@ export async function runReview(reportId: string): Promise<void> {
 
   try {
     const pages = splitPagesFromStorage(report.extracted_text);
+
+    // Milestone 14: the OPTIONAL source-workbook cross-check. It never throws
+    // and never fails this review; a problem with the workbook is recorded on
+    // report_source_workbooks and simply yields no workbook findings here.
+    const sourceCheck = await runSourceWorkbookCheckForReport(reportId, pages);
+
     const findingDrafts = [
       ...checkCrossDocumentIdentityConsistency(pages),
       ...checkTemplateLeftovers(pages),
       ...checkTypoAndFormattingIssues(pages),
       ...checkMissingSupportingDocumentation(pages),
       ...checkArithmeticVerification(pages),
+      ...sourceCheck.drafts,
     ];
 
     if (findingDrafts.length > 0) {
@@ -127,6 +135,8 @@ export async function runReview(reportId: string): Promise<void> {
           description: draft.description,
           evidence: draft.evidence,
           location: draft.location,
+          // Milestone 14: traceable workbook location; null for every other check.
+          source_reference: draft.sourceReference ?? null,
           ...carry,
         }))
       );

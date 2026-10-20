@@ -5,6 +5,7 @@ import {
   isExportable,
   type ExportFinding,
   type ExportReport,
+  type ExportSourceWorkbook,
 } from "@/lib/export/findingsReportData";
 import type {
   FindingCategory,
@@ -13,7 +14,9 @@ import type {
   FindingStatus,
   ModelReviewFailureReason,
   ModelReviewStatus,
+  SourceReference,
 } from "@/lib/review/types";
+import type { SourceCheckStatus } from "@/lib/review/provenance";
 
 // PDF generation uses Node APIs.
 export const runtime = "nodejs";
@@ -85,7 +88,7 @@ export async function GET(
   const { data: findingRows, error: findingsError } = await supabase
     .from("findings")
     .select(
-      "category, severity, confidence, status, description, evidence, location, dismissed_reason, acknowledged_at, dismissed_at, created_at"
+      "category, severity, confidence, status, description, evidence, location, dismissed_reason, acknowledged_at, dismissed_at, created_at, source_reference"
     )
     .eq("report_id", id)
     .order("created_at", { ascending: true });
@@ -94,6 +97,34 @@ export async function GET(
     console.error("[export] Loading findings failed:", findingsError);
     return textResponse("The findings report could not be generated.", 500);
   }
+
+  // Milestone 14: the optional workbook's summary. A read error is a failed
+  // export, not a silent "no workbook", so the coverage statement is never wrong.
+  const { data: sourceRow, error: sourceError } = await supabase
+    .from("report_source_workbooks")
+    .select(
+      "original_filename, check_status, check_error, linked_figure_count, matched_figure_count, flagged_figure_count, ambiguous_count, contains_macros"
+    )
+    .eq("report_id", id)
+    .maybeSingle();
+
+  if (sourceError) {
+    console.error("[export] Loading source workbook failed:", sourceError);
+    return textResponse("The findings report could not be generated.", 500);
+  }
+
+  const sourceWorkbook: ExportSourceWorkbook | null = sourceRow
+    ? {
+        fileName: sourceRow.original_filename,
+        containsMacros: sourceRow.contains_macros,
+        checkStatus: sourceRow.check_status as SourceCheckStatus,
+        checkError: sourceRow.check_error,
+        linkedCount: sourceRow.linked_figure_count,
+        matchedCount: sourceRow.matched_figure_count,
+        flaggedCount: sourceRow.flagged_figure_count,
+        ambiguousCount: sourceRow.ambiguous_count,
+      }
+    : null;
 
   const exportReport: ExportReport = {
     fileName: report.original_filename,
@@ -106,6 +137,7 @@ export async function GET(
       report.model_review_error as ModelReviewFailureReason | null,
     modelReviewCompletedAt: report.model_review_completed_at,
     modelReviewVersion: report.model_review_version,
+    sourceWorkbook,
   };
 
   const findings: ExportFinding[] = (findingRows ?? []).map((row) => ({
@@ -120,6 +152,7 @@ export async function GET(
     acknowledgedAt: row.acknowledged_at,
     dismissedAt: row.dismissed_at,
     createdAt: row.created_at,
+    sourceReference: (row.source_reference as SourceReference | null) ?? null,
   }));
 
   let pdf: Uint8Array;

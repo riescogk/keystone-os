@@ -20,7 +20,8 @@
     "openai": "^7.32.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "unpdf": "^1.6.2"
+    "unpdf": "^1.6.2",
+    "word-extractor": "^1.0.4"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.10",
@@ -28,6 +29,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/word-extractor": "^1.0.6",
     "eslint": "^9",
     "eslint-config-next": "16.4.1",
     "prettier": "^3.9.5",

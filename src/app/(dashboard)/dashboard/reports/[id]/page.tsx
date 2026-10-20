@@ -20,7 +20,13 @@ import type {
   FindingSeverity,
   ModelReviewFailureReason,
   ModelReviewStatus,
+  SourceReference,
 } from "@/lib/review/types";
+import type { SourceCheckStatus } from "@/lib/review/provenance";
+import {
+  FAILURE_COPY,
+  type SourceWorkbookFailureReason,
+} from "@/lib/review/source/errors";
 
 /**
  * The model-based stage can run after this page triggers it (the
@@ -105,10 +111,28 @@ export default async function ReportPage({
   const { data: findings } = await supabase
     .from("findings")
     .select(
-      "id, category, severity, confidence, status, description, evidence, location, dismissed_reason, carried_forward_from"
+      "id, category, severity, confidence, status, description, evidence, location, dismissed_reason, carried_forward_from, source_reference"
     )
     .eq("report_id", id)
     .order("created_at", { ascending: true });
+
+  // Milestone 14: the optional source-workbook check for this report and,
+  // for a revision, for the report it revises. A missing row means no
+  // workbook was attached ("none"). RLS limits both to the caller's own.
+  const sourceWorkbookIds = [
+    id,
+    ...(report.previous_report_id ? [report.previous_report_id] : []),
+  ];
+  const { data: sourceRows } = await supabase
+    .from("report_source_workbooks")
+    .select(
+      "report_id, original_filename, check_status, check_error, linked_figure_count, matched_figure_count, flagged_figure_count, ambiguous_count, contains_macros"
+    )
+    .in("report_id", sourceWorkbookIds);
+  const sourceRow = sourceRows?.find((row) => row.report_id === id) ?? null;
+  const currentSourceStatus: SourceCheckStatus = sourceRow
+    ? (sourceRow.check_status as SourceCheckStatus)
+    : "none";
 
   const sortedFindings = [...(findings ?? [])].sort(
     (a, b) =>
@@ -148,7 +172,7 @@ export default async function ReportPage({
         supabase
           .from("findings")
           .select(
-            "id, category, severity, confidence, status, description, evidence, location, dismissed_reason, carried_forward_from"
+            "id, category, severity, confidence, status, description, evidence, location, dismissed_reason, carried_forward_from, source_reference"
           )
           .eq("report_id", report.previous_report_id),
       ]);
@@ -162,11 +186,15 @@ export default async function ReportPage({
           findings: (findings ?? []).map(toComparable),
           reviewVersion: report.review_version,
           modelReviewStatus: report.model_review_status as ModelReviewStatus,
+          sourceCheckStatus: currentSourceStatus,
         },
         {
           findings: (previousFindingsResult.data ?? []).map(toComparable),
           reviewVersion: previous.review_version,
           modelReviewStatus: previous.model_review_status as ModelReviewStatus,
+          sourceCheckStatus: (sourceRows?.find(
+            (row) => row.report_id === report.previous_report_id
+          )?.check_status ?? "none") as SourceCheckStatus,
         }
       );
     }
@@ -298,6 +326,8 @@ export default async function ReportPage({
             </StatusNotice>
           )}
 
+          {sourceRow && <SourceWorkbookNotice row={sourceRow} />}
+
           {comparisonUnavailable && (
             <StatusNotice>
               Comparison with the previous draft is temporarily unavailable.
@@ -342,6 +372,9 @@ export default async function ReportPage({
                     location={finding.location}
                     dismissedReason={finding.dismissed_reason}
                     comparison={comparison?.labels[finding.id]}
+                    sourceReference={
+                      (finding.source_reference as SourceReference | null) ?? null
+                    }
                   />
                 ))}
               </ul>
@@ -404,6 +437,83 @@ export default async function ReportPage({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Milestone 14: what happened to the attached Excel workbook. It states
+ * exactly what was checked and what was not, and never describes a failed
+ * or unfinished check as a passed one. The report review above is shown as
+ * complete regardless, because it is.
+ */
+function SourceWorkbookNotice({
+  row,
+}: {
+  row: {
+    original_filename: string;
+    check_status: string;
+    check_error: string | null;
+    linked_figure_count: number | null;
+    matched_figure_count: number | null;
+    flagged_figure_count: number | null;
+    ambiguous_count: number | null;
+    contains_macros: boolean;
+  };
+}) {
+  const name = `“${row.original_filename}”`;
+  const macroNote = row.contains_macros
+    ? " The workbook contains macros; Keystone did not run them."
+    : "";
+
+  if (row.check_status === "pending" || row.check_status === "processing") {
+    return (
+      <StatusNotice>
+        Source workbook {name} is being checked. Refresh this page in a moment.
+        {macroNote}
+      </StatusNotice>
+    );
+  }
+
+  if (row.check_status === "failed") {
+    const reason = (row.check_error ?? "internal") as SourceWorkbookFailureReason;
+    return (
+      <StatusNotice tone="error">
+        Source workbook {name} could not be checked because{" "}
+        {FAILURE_COPY[reason] ?? FAILURE_COPY.internal}. The report review above
+        is complete and is not affected. No workbook cross-checks were made.
+        {macroNote}
+      </StatusNotice>
+    );
+  }
+
+  const linked = row.linked_figure_count ?? 0;
+  const matched = row.matched_figure_count ?? 0;
+  const flagged = row.flagged_figure_count ?? 0;
+  const ambiguous = row.ambiguous_count ?? 0;
+
+  if (linked === 0) {
+    return (
+      <StatusNotice>
+        Source workbook {name} was checked, but no report figures could be
+        linked to it with confidence, so no figures were compared. Figures
+        that are not linked are not checked.{macroNote}
+      </StatusNotice>
+    );
+  }
+
+  return (
+    <StatusNotice tone={flagged > 0 ? "error" : "success"}>
+      Source workbook {name}: {linked} report{" "}
+      {linked === 1 ? "figure was" : "figures were"} linked to the workbook and
+      checked. {matched} matched within rounding
+      {flagged > 0
+        ? `, and ${flagged} ${flagged === 1 ? "differs" : "differ"} (listed below as Source Workbook Cross-Check findings)`
+        : ""}
+      .{ambiguous > 0
+        ? ` ${ambiguous} possible ${ambiguous === 1 ? "link was" : "links were"} ambiguous and left unchecked.`
+        : ""}{" "}
+      Figures that could not be linked were not checked.{macroNote}
+    </StatusNotice>
   );
 }
 

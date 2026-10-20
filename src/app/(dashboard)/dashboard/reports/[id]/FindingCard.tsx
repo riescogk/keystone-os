@@ -15,6 +15,8 @@ import {
   type FindingStatus,
 } from "@/lib/review/types";
 import type { ComparisonLabel } from "@/lib/review/comparison/buildComparison";
+import { PROVENANCE_LABEL, findingProvenance } from "@/lib/review/provenance";
+import type { SourceReference } from "@/lib/review/types";
 
 interface FindingCardProps {
   id: string;
@@ -28,6 +30,8 @@ interface FindingCardProps {
   dismissedReason: string | null;
   /** Re-review only (PRD 8.5/8.7): how this finding relates to the previous draft. */
   comparison?: ComparisonLabel;
+  /** Milestone 14: the workbook location behind a source-workbook finding. */
+  sourceReference?: SourceReference | null;
 }
 
 const COMPARISON_LABEL: Record<ComparisonLabel, string> = {
@@ -68,6 +72,7 @@ export function FindingCard({
   location,
   dismissedReason,
   comparison,
+  sourceReference,
 }: FindingCardProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -103,6 +108,8 @@ export function FindingCard({
   }
 
   const isModelBased = confidence === "model_based";
+  const provenance = findingProvenance(category, confidence);
+  const isSourceWorkbook = provenance === "source_workbook";
 
   return (
     <li
@@ -135,6 +142,11 @@ export function FindingCard({
         ) : (
           <span className="text-xs text-slate-400">· Deterministic</span>
         )}
+        {isSourceWorkbook && (
+          <span className="inline-flex items-center rounded-full border border-teal-300 bg-white px-2.5 py-0.5 text-xs font-medium text-teal-800">
+            {PROVENANCE_LABEL.source_workbook}
+          </span>
+        )}
         {comparison && (
           <span
             className={clsx(
@@ -159,6 +171,66 @@ export function FindingCard({
       <p className="text-sm text-slate-900">{description}</p>
       <p className="text-sm text-slate-600">{evidence}</p>
       {location && <p className="text-xs text-slate-400">{location}</p>}
+      {isSourceWorkbook && sourceReference && (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-md bg-white/70 px-3 py-2 text-xs text-slate-600">
+          <dt className="text-slate-500">Source workbook</dt>
+          <dd className="break-all">{sourceReference.workbook}</dd>
+          <dt className="text-slate-500">Sheet</dt>
+          <dd>{sourceReference.sheet}</dd>
+          <dt className="text-slate-500">Cell</dt>
+          <dd>{sourceReference.cell}</dd>
+          {sourceReference.definedName && (
+            <>
+              <dt className="text-slate-500">Defined name</dt>
+              <dd className="break-all">{sourceReference.definedName}</dd>
+            </>
+          )}
+          {sourceReference.label && (
+            <>
+              <dt className="text-slate-500">Label</dt>
+              <dd className="break-all">{sourceReference.label}</dd>
+            </>
+          )}
+          {sourceReference.table && (
+            <>
+              <dt className="text-slate-500">Table</dt>
+              <dd>{sourceReference.table}</dd>
+            </>
+          )}
+          {sourceReference.range && (
+            <>
+              <dt className="text-slate-500">Source range</dt>
+              <dd className="break-all">{sourceReference.range}</dd>
+            </>
+          )}
+          {sourceReference.header && (
+            <>
+              <dt className="text-slate-500">Column/header</dt>
+              <dd className="break-all">{sourceReference.header}</dd>
+            </>
+          )}
+          {sourceReference.formula && (
+            <>
+              <dt className="text-slate-500">Formula</dt>
+              <dd className="break-all font-mono">{sourceReference.formula}</dd>
+            </>
+          )}
+          <dt className="text-slate-500">Workbook value</dt>
+          <dd>{sourceReference.value}</dd>
+          <dt className="text-slate-500">Linked by</dt>
+          <dd>
+            {sourceReference.linkedBy === "defined_name"
+              ? "Defined-name identifier in the report"
+              : sourceReference.linkedBy === "defined_range"
+                ? "Defined-name range aligned to report figures"
+                : sourceReference.linkedBy === "table_row"
+                  ? "Excel table row aligned by label and column order"
+                  : sourceReference.linkedBy === "model_context"
+                    ? "Model-assisted contextual investigation"
+                    : "Contextual label aligned in both documents"}
+          </dd>
+        </dl>
+      )}
       {isModelBased && (
         <p className="text-xs text-indigo-700">
           Identified by a language model from the report text, not by an exact

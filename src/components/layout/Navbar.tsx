@@ -20,15 +20,22 @@ export function Navbar({ userEmail }: NavbarProps) {
         </Link>
 
         <nav className="flex items-center gap-6" aria-label="Primary">
-          <Link
-            href="/dashboard/automation"
-            className="text-sm font-medium text-slate-600 hover:text-slate-900"
-          >
-            I&E / Rent Roll
-          </Link>
+  <Link
+    href="/dashboard/automation"
+    className="text-sm font-medium text-slate-600 hover:text-slate-900"
+  >
+    I&E / Rent Roll
+  </Link>
 
-          <Link
-            href="/dashboard/settings"
+  <Link
+    href="/dashboard"
+    className="text-sm font-medium text-slate-600 hover:text-slate-900"
+  >
+    Review
+  </Link>
+
+  <Link
+    href="/dashboard/settings"
             className="text-sm font-medium text-slate-600 hover:text-slate-900"
           >
             Account Settings

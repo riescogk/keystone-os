@@ -7,7 +7,10 @@ import {
   type FindingStatus,
   type ModelReviewFailureReason,
   type ModelReviewStatus,
+  type SourceReference,
 } from "@/lib/review/types";
+import type { SourceCheckStatus } from "@/lib/review/provenance";
+import { FAILURE_COPY, type SourceWorkbookFailureReason } from "@/lib/review/source/errors";
 
 /**
  * Data model and pure helpers for the findings export (PRD Section 23,
@@ -26,6 +29,20 @@ export interface ExportReport {
   modelReviewError: ModelReviewFailureReason | null;
   modelReviewCompletedAt: string | null;
   modelReviewVersion: string | null;
+  /** Milestone 14: the optional source workbook, or null/absent when none was attached. */
+  sourceWorkbook?: ExportSourceWorkbook | null;
+}
+
+/** The source-workbook summary the export states (never the workbook's contents). */
+export interface ExportSourceWorkbook {
+  fileName: string;
+  containsMacros: boolean;
+  checkStatus: SourceCheckStatus;
+  checkError: string | null;
+  linkedCount: number | null;
+  matchedCount: number | null;
+  flaggedCount: number | null;
+  ambiguousCount: number | null;
 }
 
 export interface ExportFinding {
@@ -40,6 +57,8 @@ export interface ExportFinding {
   acknowledgedAt: string | null;
   dismissedAt: string | null;
   createdAt: string;
+  /** Milestone 14: traceable workbook location; null or absent for other checks. */
+  sourceReference?: SourceReference | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -128,11 +147,62 @@ export function summarizeFindings(findings: ExportFinding[]): FindingsSummary {
 /* Coverage statements (never overstate what was checked)              */
 /* ------------------------------------------------------------------ */
 
-/** Deterministic categories that run on every review, in display order. */
+/**
+ * Deterministic categories that run on every review, in display order.
+ * Excludes the model-based category and the source-workbook category: the
+ * latter runs only when a workbook was attached, and is described by
+ * describeSourceWorkbookCoverage instead. Listing it here would claim a
+ * check ran on every report.
+ */
 export function deterministicCheckLabels(): string[] {
   return (Object.keys(FINDING_CATEGORY_LABEL) as FindingCategory[])
-    .filter((category) => category !== "narrative_data_contradiction")
+    .filter(
+      (category) =>
+        category !== "narrative_data_contradiction" &&
+        category !== "source_workbook_discrepancy"
+    )
     .map((category) => FINDING_CATEGORY_LABEL[category]);
+}
+
+/**
+ * One honest sentence about the optional source-workbook cross-check, or null
+ * when no workbook was attached. It states what was linked and compared, and
+ * that unlinked figures were NOT checked, so the export never implies full
+ * coverage of the report.
+ */
+export function describeSourceWorkbookCoverage(
+  workbook: ExportSourceWorkbook | null | undefined
+): string | null {
+  if (!workbook || workbook.checkStatus === "none") return null;
+
+  const scope = `Source workbook cross-check (${workbook.fileName})`;
+  const macroNote = workbook.containsMacros
+    ? " The workbook contains macros, which were not run."
+    : "";
+
+  switch (workbook.checkStatus) {
+    case "complete": {
+      const linked = workbook.linkedCount ?? 0;
+      if (linked === 0) {
+        return `${scope}: completed. No report figures could be linked to the workbook with confidence, so none were compared. Figures that are not linked are not checked.${macroNote}`;
+      }
+      const ambiguous = workbook.ambiguousCount ?? 0;
+      return `${scope}: completed. ${linked} report figure${linked === 1 ? "" : "s"} linked to the workbook and checked: ${workbook.matchedCount ?? 0} matched within rounding, ${workbook.flaggedCount ?? 0} differ.${
+        ambiguous > 0
+          ? ` ${ambiguous} possible link${ambiguous === 1 ? " was" : "s were"} ambiguous and left unchecked.`
+          : ""
+      } Figures that are not linked are not checked.${macroNote}`;
+    }
+    case "failed": {
+      const reason = (workbook.checkError ?? "internal") as SourceWorkbookFailureReason;
+      return `${scope}: could not be completed because ${FAILURE_COPY[reason] ?? FAILURE_COPY.internal}. No workbook cross-check findings are included.${macroNote}`;
+    }
+    case "pending":
+    case "processing":
+      return `${scope}: still in progress when this summary was exported. Findings from this check, if any, are not included.${macroNote}`;
+    default:
+      return null;
+  }
 }
 
 const MODEL_FAILURE_TEXT: Record<ModelReviewFailureReason, string> = {

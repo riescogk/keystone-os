@@ -21,7 +21,8 @@ export type FindingCategory =
   | "typo_and_formatting_inconsistency"
   | "missing_supporting_documentation"
   | "internal_arithmetic_verification"
-  | "narrative_data_contradiction";
+  | "narrative_data_contradiction"
+  | "source_workbook_discrepancy";
 
 /** PRD Section 19 — fixed, permanent three-level taxonomy. */
 export type FindingSeverity = "critical" | "moderate" | "low";
@@ -56,6 +57,7 @@ export const FINDING_CATEGORY_LABEL: Record<FindingCategory, string> = {
   missing_supporting_documentation: "Missing Supporting Documentation",
   internal_arithmetic_verification: "Internal Arithmetic Verification",
   narrative_data_contradiction: "Narrative-to-Data Contradiction",
+  source_workbook_discrepancy: "Source Workbook Cross-Check",
 };
 
 export const FINDING_SEVERITY_LABEL: Record<FindingSeverity, string> = {
@@ -70,6 +72,29 @@ export interface PageText {
   text: string;
 }
 
+/**
+ * Where a source-workbook finding's evidence lives in the workbook
+ * (Milestone 14). Stored as jsonb on the finding and rendered by the UI and
+ * the export. Only short identifiers and display values are stored here,
+ * never workbook contents beyond the single linked value.
+ */
+export interface SourceReference {
+  workbook: string;
+  sheet: string;
+  cell: string;
+  definedName: string | null;
+  label: string | null;
+  table: string | null;
+  formula: string | null;
+  /** The linked workbook value, formatted for display. */
+  value: string;
+  linkedBy: "defined_name" | "defined_range" | "table_row" | "context_label" | "model_context";
+  /** Named/table range when the relationship spans more than one cell. */
+  range?: string | null;
+  /** Header context for multi-column table/range links. */
+  header?: string | null;
+}
+
 /** A check's proposed finding, before it's given an id/report_id and inserted. */
 export interface FindingDraft {
   category: FindingCategory;
@@ -77,6 +102,8 @@ export interface FindingDraft {
   description: string;
   evidence: string;
   location: string;
+  /** Set only for source-workbook findings. */
+  sourceReference?: SourceReference | null;
 }
 
 /**

@@ -103,7 +103,7 @@ export default async function NewReviewPage({
           <p className="mt-1 text-sm text-slate-600">
             {revisesReportId
               ? `This will be reviewed as a revised draft of “${revisedFileName}”. The new findings report will show what was resolved, what is still open, and what is new. Your earlier report and its findings are kept.`
-              : "Upload a finished PDF report. PDF only, up to 25 MB."}
+              : "Upload a finished PDF or legacy Word (.doc) report (up to 25 MB). You can optionally add the Excel workbook it was prepared from for source-data checks."}
           </p>
           <div className="mt-6 rounded-lg border border-slate-200 bg-white p-6">
             <UploadForm revisesReportId={revisesReportId} />

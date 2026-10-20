@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import { toPdfSafeText } from "@/lib/export/pdfText";
+import { PROVENANCE_LABEL } from "@/lib/review/provenance";
 import {
   DISCLAIMER_FOOTER,
   DISCLAIMER_FULL,
@@ -8,6 +9,7 @@ import {
   MODEL_FINDING_NOTE,
   deterministicCheckLabels,
   describeModelCoverage,
+  describeSourceWorkbookCoverage,
   formatUtc,
   labelCategory,
   labelSeverity,
@@ -266,6 +268,10 @@ export async function buildFindingsReportPdf(
     { gapAfter: 4 }
   );
   writeWrapped(describeModelCoverage(report));
+  const workbookCoverage = describeSourceWorkbookCoverage(report.sourceWorkbook);
+  if (workbookCoverage) {
+    writeWrapped(workbookCoverage);
+  }
 
   /* ---------------------------- Findings -------------------------- */
 
@@ -312,6 +318,47 @@ export async function buildFindingsReportPdf(
     }
     if (finding.confidence === "model_based") {
       rows.push({ text: MODEL_FINDING_NOTE, size: 9, indent: 12 });
+    }
+
+    // Milestone 14: where a source-workbook finding's evidence lives. Only
+    // the location and the linked value are written, never workbook contents.
+    if (
+      finding.category === "source_workbook_discrepancy" &&
+      finding.sourceReference
+    ) {
+      const ref = finding.sourceReference;
+      rows.push({
+        text: `Provenance: ${PROVENANCE_LABEL.source_workbook}. Linked by ${
+          ref.linkedBy === "defined_name"
+            ? "a defined-name identifier in the report"
+            : ref.linkedBy === "defined_range"
+              ? "an ordered defined-name range"
+              : ref.linkedBy === "table_row"
+                ? "an Excel table row and report label"
+                : ref.linkedBy === "model_context"
+                  ? "bounded model-assisted workbook context"
+                  : "a contextual label in both documents"
+        }.`,
+        size: 9,
+        indent: 12,
+      });
+      rows.push({
+        text: `Source workbook: ${ref.workbook}   Sheet: ${ref.sheet}   Cell: ${ref.cell}`,
+        size: 9.5,
+        indent: 12,
+      });
+      const detail = [
+        ref.definedName ? `Defined name: ${ref.definedName}` : null,
+        ref.label ? `Label: ${ref.label}` : null,
+        ref.table ? `Table: ${ref.table}` : null,
+        ref.range ? `Range: ${ref.range}` : null,
+        ref.header ? `Header: ${ref.header}` : null,
+        ref.formula ? `Formula: ${ref.formula}` : null,
+        `Workbook value: ${ref.value}`,
+      ]
+        .filter((part): part is string => part !== null)
+        .join("   ");
+      rows.push({ text: detail, size: 9.5, indent: 12 });
     }
 
     // The user's own triage decisions — their QC audit trail.
