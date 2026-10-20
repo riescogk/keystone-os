@@ -3,7 +3,9 @@
 import { useRef, useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
-import { uploadReport } from "@/lib/reports/actions";
+import { createClient } from "@/lib/supabase/client";
+import { finalizeReportUpload } from "@/lib/reports/actions";
+import { uploadReportDirect } from "@/lib/reports/directUpload";
 import {
   MAX_FILE_SIZE_BYTES,
   REPORT_ACCEPT,
@@ -113,20 +115,27 @@ export function UploadForm({ revisesReportId }: UploadFormProps = {}) {
     setServerError(null);
     setIsUploading(true);
 
-    const formData = new FormData();
-    formData.set("file", selectedFile);
-    if (selectedWorkbook) {
-      // Optional. Only sent when the user attached one.
-      formData.set("workbook", selectedWorkbook);
+    // The file bytes go straight from the browser to private Storage (Vercel
+    // rejects large request bodies); the Server Action only finalizes, from
+    // the stored objects. The try/finally guarantees the button never stays
+    // stuck in its loading state, whatever fails.
+    let result: Awaited<ReturnType<typeof uploadReportDirect>>;
+    try {
+      result = await uploadReportDirect({
+        supabase: createClient(),
+        report: selectedFile,
+        workbook: selectedWorkbook,
+        revisesReportId: revisesReportId ?? null,
+        finalize: finalizeReportUpload,
+      });
+    } catch {
+      result = {
+        success: false,
+        error: "Something went wrong while uploading. Please try again.",
+      };
+    } finally {
+      setIsUploading(false);
     }
-    if (revisesReportId) {
-      // The server action re-validates this (it is the one that enforces it).
-      formData.set("revisesReportId", revisesReportId);
-    }
-
-    const result = await uploadReport(formData);
-
-    setIsUploading(false);
 
     if (!result.success) {
       setServerError(result.error);
