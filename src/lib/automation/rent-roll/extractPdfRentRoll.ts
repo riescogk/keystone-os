@@ -560,27 +560,21 @@ function extractOneSiteUnits(
   const genericUnitPattern =
     /([A-Za-z0-9-]+)\s+([A-Za-z0-9/ -]+?)([A-Za-z0-9-]+)\s+(?:-?\(?[\d,.]+\)?)/;
 
-  for (const page of pages) {
-    const lowerPage = page.toLowerCase();
+  const lines = pages
+    .filter((page) => {
+      const lowerPage = page.toLowerCase();
 
-    /*
-     * Page 8 is summary data, not physical unit detail.
-     */
-    if (
-      lowerPage.includes(
+      return !lowerPage.includes(
         "occupancy and rents summary for current date"
-      )
-    ) {
-      continue;
-    }
+      );
+    })
+    .flatMap((page) => cleanLines(page));
 
-    const lines = cleanLines(page);
-
-    for (
-      let index = 0;
-      index < lines.length;
-      index += 1
-    ) {
+  for (
+    let index = 0;
+    index < lines.length;
+    index += 1
+  ) {
       const line = lines[index];
 
       /*
@@ -650,14 +644,28 @@ function extractOneSiteUnits(
          * Look for a unit identifier such as 1-301 somewhere inside
          * the current physical-unit block.
          */
-        const unitMatch =
-          block.match(/\b(\d+-\d+)\b/);
+        const sqftUnitMatch = block.match(
+          /(\d{3,5})(\d{2}-\d{2}-[A-Za-z0-9]+)\b/
+        );
 
-        if (!unitMatch) {
-          continue;
+        if (sqftUnitMatch) {
+          sqft =
+            parseMoney(sqftUnitMatch[1]) ??
+            sqftUnitMatch[1];
+
+          unit = sqftUnitMatch[2];
+        } else {
+          const unitMatch =
+            block.match(
+              /\b([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)\b/
+            );
+
+          if (!unitMatch) {
+            continue;
+          }
+
+          unit = unitMatch[1];
         }
-
-        unit = unitMatch[1];
 
         /*
          * Try to recover SQFT from the digits immediately before the
@@ -719,7 +727,6 @@ function extractOneSiteUnits(
 
       let residentName = "";
       let marketRent: number | null = null;
-      let chargeCode = "";
       let rentAmount = 0;
 
       /*
@@ -839,7 +846,7 @@ function extractOneSiteUnits(
           );
       } else {
         const vacantMarketMatch =
-          block.match(
+          line.match(
             /(-?[\d,]+\.\d{2})VACANT/i
           );
 
@@ -856,70 +863,126 @@ function extractOneSiteUnits(
        * RENT AMOUNT
        * ========================================================
        *
-       * Actual extraction:
+       * A unit can contain more than one accepted rent transaction
+       * code. Section 8 / subsidy reports commonly contain both:
        *
-       * Occupied RENT 215.00...
+       * RENT    = tenant-paid portion
+       * SUBRENT = subsidy-paid portion
        *
-       * We explicitly inspect the transaction code immediately
-       * following the status.
-       *
-       * Exact matching means RENT != SUBRENT.
+       * Sum every accepted code found before the next unit and keep
+       * the matched codes for the output Charge Code column.
        */
-  const chargePattern =
-  /^(?:Occupied|Vacant-Leased|Vacant|Admin\/Down|Down|Model)\s+([A-Za-z0-9_-]+)\s+(-?[\d,]+\.\d{2})(?=[\d,(]|$)/i;
+      const matchedChargeCodes: string[] = [];
 
-const chargeMatch =
-  line.match(chargePattern);
+      let recordEndIndex = index + 1;
 
-if (chargeMatch) {
-  const candidateCode =
-    chargeMatch[1]
-      .trim()
-      .toLowerCase();
+      while (recordEndIndex < lines.length) {
+        const candidateLine = lines[recordEndIndex];
+        const candidateLower = candidateLine.toLowerCase();
 
-  if (chargeCodes.has(candidateCode)) {
-    chargeCode = candidateCode;
+        if (
+          /^(Occupied|Vacant-Leased|Vacant|Admin\/Down|Down|Model)\b/i.test(
+            candidateLine
+          ) ||
+          candidateLower.startsWith("totals:") ||
+          candidateLower.includes(
+            "occupancy and rents summary for current date"
+          ) ||
+          candidateLower.includes(
+            "summary billing by sub journal"
+          ) ||
+          candidateLower.includes(
+            "summary billing by transaction code"
+          )
+        ) {
+          break;
+        }
 
-    /*
-     * IMPORTANT:
-     *
-     * unpdf reverses the numeric columns in this OneSite report.
-     *
-     * Example source row:
-     *
-     * RENT 280.00 ... Deposit 215.00
-     *
-     * becomes:
-     *
-     * Occupied RENT 215.00280.000.00280.00...
-     *
-     * Therefore:
-     * first value  = deposit/balance-side value
-     * second value = actual RENT / Lease Rent
-     */
+        recordEndIndex += 1;
+      }
 
-    const afterCode =
-      line.slice(
-        line
-          .toLowerCase()
-          .indexOf(candidateCode) +
-          candidateCode.length
+      const recordLines = lines.slice(
+        index,
+        recordEndIndex
       );
 
-    const amounts =
-      afterCode.match(
-        /-?[\d,]+\.\d{2}/g
+      for (const rentLine of recordLines) {
+        for (const candidateCode of chargeCodes) {
+          const escapedCode = candidateCode.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+          );
+
+          const codePattern = new RegExp(
+            `\\b${escapedCode}\\b`,
+            "i"
+          );
+
+          const codeMatch = codePattern.exec(rentLine);
+
+          if (
+            !codeMatch ||
+            codeMatch.index === undefined
+          ) {
+            continue;
+          }
+
+          /*
+           * Only inspect numbers on the SAME line as the
+           * transaction code. This prevents repeated page headers
+           * such as "RENT ROLL DETAIL" from being treated as rent.
+           */
+          const afterCode = rentLine.slice(
+            codeMatch.index + codeMatch[0].length
+          );
+
+          const amounts = afterCode.match(
+            /-?[\d,]+\.\d{2}/g
+          );
+
+          if (!amounts || amounts.length < 2) {
+            continue;
+          }
+
+          /*
+           * unpdf reverses the numeric columns in this OneSite
+           * report. The second numeric value after the code is the
+           * actual Lease Rent amount for standard rows.
+           */
+          const amount =
+            parseMoney(amounts[1]) ?? 0;
+
+          rentAmount += amount;
+
+          if (
+            !matchedChargeCodes.includes(candidateCode)
+          ) {
+            matchedChargeCodes.push(candidateCode);
+          }
+        }
+      }
+
+      const chargeCode =
+        matchedChargeCodes.join(", ");
+
+      /*
+       * Utility allowance rows (UTAC / UTILREIMB) can cause OneSite
+       * extraction to surface Total Billing instead of Lease Rent
+       * for the subsidy row. In those cases, the contractual rent
+       * should not exceed the unit's Market Rent.
+       */
+      const hasUtilityAdjustment = recordLines.some(
+        (recordLine) =>
+          /\b(?:UTAC|UTILREIMB)\b/i.test(recordLine)
       );
 
-    if (
-      amounts &&
-      amounts.length >= 2
-    ) {
-      rentAmount =
-        parseMoney(amounts[1]) ?? 0;
-    }
-  }
-}
+      if (
+        hasUtilityAdjustment &&
+        marketRent !== null &&
+        rentAmount > marketRent
+      ) {
+        rentAmount = marketRent;
+      }
 
       if (
         status === "occupied" &&
@@ -943,7 +1006,6 @@ if (chargeMatch) {
 
       seenUnits.add(unit);
     }
-  }
 
   return {
     units,
