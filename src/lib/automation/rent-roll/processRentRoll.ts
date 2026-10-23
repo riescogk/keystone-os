@@ -416,12 +416,14 @@ function extractUnits(
     const residentName = getCellText(row.getCell(5));
     const marketRent = numericCellValue(row.getCell(6));
 
-    let matchedChargeCode = "";
+    const matchedChargeCodes: string[] = [];
     let rentAmount = 0;
 
     /*
      * A unit can occupy several source rows because recurring charges
-     * can appear below the main unit row.
+     * can appear below the main unit row. Sum every accepted rent charge
+     * code for the unit (for example RENT + SUBRENT), while preserving
+     * the existing behavior for units that only have one matching code.
      */
     let chargeRowNumber = rowNumber;
 
@@ -441,16 +443,20 @@ function extractUnits(
 
       if (chargeCodes.has(normalizedCode)) {
         /*
-         * Match the OG output: write the normalized/lowercase charge
-         * code rather than preserving source capitalization such as RENT.
+         * Match the OG output: write normalized/lowercase charge codes
+         * rather than preserving source capitalization such as RENT.
          */
-        matchedChargeCode = normalizedCode;
-        rentAmount = numericCellValue(chargeRow.getCell(8)) ?? 0;
-        break;
+        if (!matchedChargeCodes.includes(normalizedCode)) {
+          matchedChargeCodes.push(normalizedCode);
+        }
+
+        rentAmount += numericCellValue(chargeRow.getCell(8)) ?? 0;
       }
 
       chargeRowNumber += 1;
     }
+
+    const matchedChargeCode = matchedChargeCodes.join(", ");
 
     const residentUpper = residentName.toUpperCase();
 
@@ -772,12 +778,14 @@ function extractOneSiteUnits(
         : "MODEL";
     }
 
-    let matchedChargeCode = "";
+    const matchedChargeCodes: string[] = [];
     let rentAmount = 0;
 
     /*
-     * Search the unit row and continuation rows for one of
-     * the charge codes entered by the user on the webpage.
+     * Search the unit row and continuation rows for ALL accepted
+     * charge codes entered by the user on the webpage. This supports
+     * Section 8-style units where resident RENT and subsidy SUBRENT
+     * must be combined into one Rent Amount.
      */
     let chargeRowNumber = rowNumber;
 
@@ -832,18 +840,20 @@ function extractOneSiteUnits(
         sourceChargeCode.trim().toLowerCase();
 
       if (chargeCodes.has(normalizedCode)) {
-        matchedChargeCode = normalizedCode;
+        if (!matchedChargeCodes.includes(normalizedCode)) {
+          matchedChargeCodes.push(normalizedCode);
+        }
 
-        rentAmount =
+        rentAmount +=
           numericCellValue(
             chargeRow.getCell(rentAmountColumn)
           ) ?? 0;
-
-        break;
       }
 
       chargeRowNumber += 1;
     }
+
+    const matchedChargeCode = matchedChargeCodes.join(", ");
 
     const occupied =
       statusUpper.includes("OCCUPIED");
