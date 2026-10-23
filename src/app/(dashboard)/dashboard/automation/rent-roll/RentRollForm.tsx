@@ -4,7 +4,7 @@ import { FormEvent, useState } from "react";
 
 export default function RentRollForm() {
   const [file, setFile] = useState<File | null>(null);
-  const [chargeCodes, setChargeCodes] = useState("rent, erent");
+  const [chargeCodes, setChargeCodes] = useState("rent, erent, subrent");
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -165,7 +165,7 @@ export default function RentRollForm() {
           type="text"
           value={chargeCodes}
           onChange={(event) => setChargeCodes(event.target.value)}
-          placeholder="rent, erent"
+          placeholder="rent, erent, subrent"
           className="mt-2 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
         />
 
