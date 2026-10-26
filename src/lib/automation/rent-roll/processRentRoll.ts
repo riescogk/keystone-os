@@ -826,9 +826,13 @@ function extractOneSiteUnits(
             .trim()
             .toLowerCase();
 
-          if (continuationStatus === "applicant") {
-            break;
-          }
+          if (
+  continuationStatus === "applicant" ||
+  continuationStatus === "former" ||
+  continuationStatus === "*former"
+) {
+  break;
+}
         }
       }
 
@@ -1450,6 +1454,79 @@ export async function processRentRoll(
 const { units, warnings } = isOneSiteRentRoll(sourceWorksheet)
   ? extractOneSiteUnits(sourceWorksheet, chargeCodes)
   : extractUnits(sourceWorksheet, chargeCodes);
+
+  if (isOneSiteRentRoll(sourceWorksheet)) {
+  let expectedUnitCount: number | null = null;
+
+  for (
+    let rowNumber = 1;
+    rowNumber <= sourceWorksheet.rowCount;
+    rowNumber += 1
+  ) {
+    const row = sourceWorksheet.getRow(rowNumber);
+
+    for (
+      let columnNumber = 1;
+      columnNumber <= sourceWorksheet.columnCount;
+      columnNumber += 1
+    ) {
+      const text = getCellText(
+        row.getCell(columnNumber)
+      )
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (
+        !/totals\s*\/\s*averages:/i.test(text)
+      ) {
+        continue;
+      }
+
+      const inlineMatch = text.match(
+        /totals\s*\/\s*averages:\s*(\d{1,5})\b/i
+      );
+
+      if (inlineMatch) {
+        expectedUnitCount = Number(inlineMatch[1]);
+        break;
+      }
+
+      for (
+        let candidateColumn = columnNumber + 1;
+        candidateColumn <= sourceWorksheet.columnCount;
+        candidateColumn += 1
+      ) {
+        const candidate = numericCellValue(
+          row.getCell(candidateColumn)
+        );
+
+        if (
+          candidate !== null &&
+          Number.isInteger(candidate) &&
+          candidate > 0
+        ) {
+          expectedUnitCount = candidate;
+          break;
+        }
+      }
+
+      break;
+    }
+
+    if (expectedUnitCount !== null) {
+      break;
+    }
+  }
+
+  if (
+    expectedUnitCount !== null &&
+    units.length !== expectedUnitCount
+  ) {
+    throw new Error(
+      `OneSite Rent Roll validation failed: the source summary reports ${expectedUnitCount} physical units, but the parser found ${units.length}. No Clean Rent Roll was generated.`
+    );
+  }
+}
 
   const outputWorkbook = new ExcelJS.Workbook();
 
