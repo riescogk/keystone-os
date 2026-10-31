@@ -9,6 +9,8 @@ import {
   verificationFailureState,
 } from "../src/lib/automation/ai-verification/errors";
 import { parseRentRollAIOutput } from "../src/lib/automation/ai-verification/openaiRentRollProvider";
+import { parseIEAIOutput } from "../src/lib/automation/ai-verification/openaiIEProvider";
+import { runIEAIVerification } from "../src/lib/automation/ai-verification/runIEVerification";
 import { deriveRentRollCategoriesFromAI } from "../src/lib/automation/ai-verification/rentRollPostProcess";
 import { runRentRollAIVerification } from "../src/lib/automation/ai-verification/runRentRollVerification";
 import {
@@ -16,6 +18,7 @@ import {
   currencyValuesEqual,
   normalizeMoney,
   normalizeText,
+  normalizePeriodLabel,
   normalizeUnitIdentifier,
 } from "../src/lib/automation/ai-verification/normalize";
 import type { IEVerificationDocument } from "../src/lib/automation/ai-verification/ieTypes";
@@ -245,6 +248,92 @@ test("Rent Roll AI runner keeps missing provider non-blocking", async () => {
     sourceFile: { name: "test.pdf", mimeType: "application/pdf", bytes: new Uint8Array([1]) },
     keystoneWorkbookBuffer: new Uint8Array([1]),
     chargeCodes: ["rent"],
+    provider: null,
+  });
+
+  assert.equal(result.status, "unavailable");
+  if (result.status === "unavailable" || result.status === "failed") {
+    assert.equal(result.failureReason, "not_configured");
+  }
+});
+
+
+test("normalizes common I&E period-label variants", () => {
+  assert.equal(normalizePeriodLabel("T12 October 2026"), "t12 oct '26");
+  assert.equal(normalizePeriodLabel("T12 Oct '26"), "t12 oct '26");
+  assert.equal(normalizePeriodLabel("Budget 2027"), "2027 budget");
+  assert.equal(normalizePeriodLabel("2027 Budget"), "2027 budget");
+});
+
+test("parses strict I&E AI JSON with dynamic period values", () => {
+  const parsed = parseIEAIOutput(JSON.stringify({
+    propertyName: "Example Apartments",
+    sources: [
+      {
+        filename: "Example T12.xlsx",
+        reportType: "t12",
+        periodLabels: ["T12 Oct '26"],
+      },
+    ],
+    periodLabels: ["2025", "T12 Oct '26", "2027 Budget"],
+    rows: [
+      {
+        accountCode: "4100",
+        internalNumber: 160,
+        lineItem: "Other Income",
+        values: [
+          { periodLabel: "2025", value: 1000 },
+          { periodLabel: "T12 October 2026", value: 1200 },
+          { periodLabel: "Budget 2027", value: null },
+        ],
+        isSummary: false,
+        evidence: [],
+        explanation: null,
+        confidence: "high",
+      },
+    ],
+    warnings: [],
+  }));
+
+  assert.equal(parsed.rows[0].values["2025"], 1000);
+  assert.equal(parsed.rows[0].values["T12 Oct '26"], 1200);
+  assert.equal(parsed.rows[0].values["2027 Budget"], null);
+});
+
+test("rejects I&E AI rows that omit a final period", () => {
+  assert.throws(
+    () => parseIEAIOutput(JSON.stringify({
+      propertyName: null,
+      sources: [],
+      periodLabels: ["2025", "2026"],
+      rows: [
+        {
+          accountCode: null,
+          internalNumber: null,
+          lineItem: "Rent",
+          values: [{ periodLabel: "2025", value: 10 }],
+          isSummary: false,
+          evidence: [],
+          explanation: null,
+          confidence: null,
+        },
+      ],
+      warnings: [],
+    })),
+    (error) => error instanceof AIVerificationError && error.reason === "invalid_output"
+  );
+});
+
+test("I&E AI runner keeps missing provider non-blocking", async () => {
+  const result = await runIEAIVerification({
+    sourceFiles: [
+      {
+        name: "annual.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        bytes: new Uint8Array([1]),
+      },
+    ],
+    keystoneWorkbookBuffer: new Uint8Array([1]),
     provider: null,
   });
 

@@ -9,6 +9,7 @@ export interface RentRollAIExtractionRequest {
 
 export interface IEAIExtractionRequest {
   files: AIVerificationSourceFile[];
+  mappingReference?: AIVerificationSourceFile;
 }
 
 /**

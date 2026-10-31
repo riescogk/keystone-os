@@ -9,3 +9,8 @@ export * from "./openaiRentRollProvider";
 export * from "./rentRollDocument";
 export * from "./rentRollPostProcess";
 export * from "./runRentRollVerification";
+export * from "./ieDocument";
+export * from "./ieReference";
+export * from "./ieSourceFiles";
+export * from "./openaiIEProvider";
+export * from "./runIEVerification";

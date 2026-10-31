@@ -165,5 +165,28 @@ export function scalarValuesEqual(left: unknown, right: unknown): boolean {
 }
 
 export function normalizePeriodLabel(value: unknown): string | null {
-  return normalizeText(value);
+  const normalized = normalizeText(value)?.replace(/[’`]/g, "'");
+
+  if (!normalized) {
+    return null;
+  }
+
+  const t12Match = normalized.match(
+    /\bt12\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[^0-9]*(\d{2,4})\b/i
+  );
+
+  if (t12Match) {
+    const month = t12Match[1].slice(0, 3).toLocaleLowerCase();
+    const year = t12Match[2].slice(-2);
+    return `t12 ${month} '${year}`;
+  }
+
+  if (normalized.includes("budget")) {
+    const year = normalized.match(/\b(?:19|20)\d{2}\b/)?.[0];
+    if (year) {
+      return `${year} budget`;
+    }
+  }
+
+  return normalized;
 }
