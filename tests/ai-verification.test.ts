@@ -4,7 +4,13 @@ import {
   compareIEDocuments,
   compareRentRollDocuments,
 } from "../src/lib/automation/ai-verification/compare";
-import { verificationFailureState } from "../src/lib/automation/ai-verification/errors";
+import {
+  AIVerificationError,
+  verificationFailureState,
+} from "../src/lib/automation/ai-verification/errors";
+import { parseRentRollAIOutput } from "../src/lib/automation/ai-verification/openaiRentRollProvider";
+import { deriveRentRollCategoriesFromAI } from "../src/lib/automation/ai-verification/rentRollPostProcess";
+import { runRentRollAIVerification } from "../src/lib/automation/ai-verification/runRentRollVerification";
 import {
   chargeCodeSetsEqual,
   currencyValuesEqual,
@@ -182,4 +188,68 @@ test("provider failure reasons map to unavailable versus failed", () => {
   assert.equal(verificationFailureState("rate_limited").status, "unavailable");
   assert.equal(verificationFailureState("invalid_output").status, "failed");
   assert.equal(verificationFailureState("timeout").status, "failed");
+});
+
+test("parses strict Rent Roll AI JSON and preserves leading zeroes", () => {
+  const parsed = parseRentRollAIOutput(JSON.stringify({
+    propertyName: "Example Apartments",
+    asOfDate: "2026-10-31",
+    expectedUnitCount: 1,
+    units: [{
+      unit: "001",
+      unitType: "A1",
+      sqft: 582,
+      unitCategory: null,
+      residentName: "Smith, John",
+      marketRent: 1029,
+      chargeCodes: ["RENT", "SUBRENT"],
+      rentAmount: 1029,
+      evidence: [],
+      explanation: null,
+      confidence: "high",
+    }],
+    warnings: [],
+  }));
+
+  assert.equal(parsed.units[0].unit, "001");
+  assert.deepEqual(parsed.units[0].chargeCodes, ["RENT", "SUBRENT"]);
+});
+
+test("rejects malformed Rent Roll AI output", () => {
+  assert.throws(
+    () => parseRentRollAIOutput('{"propertyName":"x"}'),
+    (error) => error instanceof AIVerificationError && error.reason === "invalid_output"
+  );
+});
+
+test("derives Keystone-compatible categories from independent AI source fields", () => {
+  const result = deriveRentRollCategoriesFromAI({
+    propertyName: null,
+    asOfDate: null,
+    expectedUnitCount: 3,
+    warnings: [],
+    units: [
+      { unit: "1", unitType: "A1r", sqft: 600, unitCategory: null, residentName: null, marketRent: null, chargeCodes: null, rentAmount: 0 },
+      { unit: "2", unitType: "A1", sqft: 600, unitCategory: null, residentName: null, marketRent: null, chargeCodes: null, rentAmount: 0 },
+      { unit: "3", unitType: "B2", sqft: 800, unitCategory: null, residentName: null, marketRent: null, chargeCodes: null, rentAmount: 0 },
+    ],
+  });
+
+  assert.equal(result.units[0].unitCategory, "A");
+  assert.equal(result.units[1].unitCategory, "A");
+  assert.equal(result.units[2].unitCategory, "B");
+});
+
+test("Rent Roll AI runner keeps missing provider non-blocking", async () => {
+  const result = await runRentRollAIVerification({
+    sourceFile: { name: "test.pdf", mimeType: "application/pdf", bytes: new Uint8Array([1]) },
+    keystoneWorkbookBuffer: new Uint8Array([1]),
+    chargeCodes: ["rent"],
+    provider: null,
+  });
+
+  assert.equal(result.status, "unavailable");
+  if (result.status === "unavailable" || result.status === "failed") {
+    assert.equal(result.failureReason, "not_configured");
+  }
 });

@@ -144,7 +144,6 @@ export function compareRentRollDocuments(
       [keyof RentRollVerificationUnit, (value: unknown) => unknown]
     > = [
       ["unitType", normalizeText],
-      ["sqft", normalizeText],
       ["unitCategory", normalizeText],
       ["residentName", normalizeResidentName],
     ];
@@ -160,6 +159,17 @@ export function compareRentRollDocuments(
           ...rentRollEvidence(aiUnit),
         });
       }
+    }
+
+    if (!scalarValuesEqual(keystoneUnit.sqft, aiUnit.sqft)) {
+      discrepancies.push({
+        recordKey: key,
+        field: "sqft",
+        keystoneValue: keystoneUnit.sqft,
+        aiValue: aiUnit.sqft,
+        type: "value_mismatch",
+        ...rentRollEvidence(aiUnit),
+      });
     }
 
     for (const field of ["marketRent", "rentAmount"] as const) {

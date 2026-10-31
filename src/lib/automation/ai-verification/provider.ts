@@ -18,14 +18,21 @@ export interface IEAIExtractionRequest {
  * original source file(s). They must not receive Keystone's deterministic
  * output as part of extraction, which prevents anchoring on Keystone's answer.
  */
-export interface AIVerificationProvider {
+export interface RentRollAIVerificationProvider {
   readonly name: string;
 
   extractRentRoll(
     request: RentRollAIExtractionRequest
   ): Promise<RentRollVerificationDocument>;
+}
+
+export interface IEAIVerificationProvider {
+  readonly name: string;
 
   extractIE(
     request: IEAIExtractionRequest
   ): Promise<IEVerificationDocument>;
 }
+
+export interface AIVerificationProvider
+  extends RentRollAIVerificationProvider, IEAIVerificationProvider {}
