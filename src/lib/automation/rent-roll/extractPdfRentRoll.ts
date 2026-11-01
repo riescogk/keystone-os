@@ -519,6 +519,360 @@ const reachedSummary =
  * ============================================================
  */
 
+function detectOneSiteSummarySqftValues(
+  pages: string[]
+): Set<string> {
+  const values = new Set<string>();
+
+  for (const page of pages) {
+    const normalized = page.replace(/\s+/g, " ").trim();
+
+    if (
+      !normalized.toLowerCase().includes("sqft") ||
+      !normalized.toLowerCase().includes("totals / averages")
+    ) {
+      continue;
+    }
+
+    // OneSite floorplan summary rows look like:
+    //   2BR/1BA 20 708 1,107.00 ...
+    // Capture the Average SQFT value between # Units and Market + Addl.
+    for (const match of normalized.matchAll(
+      /\b\d{1,5}\s+(\d{3,4})\s+[\d,]+\.\d{2}\b/g
+    )) {
+      values.add(match[1]);
+    }
+  }
+
+  return values;
+}
+
+
+function detectOneSiteSummaryFloorplanRecords(
+  pages: string[]
+): Array<{ floorplan: string; sqft: string }> {
+  const records = new Map<string, { floorplan: string; sqft: string }>();
+
+  for (const page of pages) {
+    const lower = page.toLowerCase();
+
+    if (
+      !lower.includes("floorplan") ||
+      !lower.includes("totals / averages")
+    ) {
+      continue;
+    }
+
+    for (const line of cleanLines(page)) {
+      const normalized = line.replace(/\s+/g, " ").trim();
+      const match = normalized.match(
+        /^(.+?)\s+\d{1,5}\s+(\d{3,4})\s+[\d,]+\.\d{2}\b/
+      );
+
+      if (!match) {
+        continue;
+      }
+
+      const floorplan = match[1].trim();
+      const sqft = match[2];
+
+      if (
+        !floorplan ||
+        /^(?:floorplan|totals?\s*\/\s*averages?:?)$/i.test(floorplan)
+      ) {
+        continue;
+      }
+
+      records.set(`${floorplan.toLowerCase()}|${sqft}`, {
+        floorplan,
+        sqft,
+      });
+    }
+  }
+
+  return [...records.values()].sort(
+    (left, right) => right.floorplan.length - left.floorplan.length
+  );
+}
+
+function detectOneSiteSummaryFloorplans(
+  records: Array<{ floorplan: string; sqft: string }>
+): string[] {
+  return [...new Set(records.map((record) => record.floorplan))].sort(
+    (left, right) => right.length - left.length
+  );
+}
+
+function parseOneSiteSqftAndUnitToken(
+  block: string,
+  summarySqftValues: Set<string>
+): { sqftText: string; unit: string } | null {
+  // Unit identifiers that begin with a letter are usually unambiguous, but
+  // hyphenated resident names can sit immediately after a 4-digit year in the
+  // extracted text (for example 2022Sotolongo-Aguirre). Never let that pattern
+  // masquerade as SQFT + unit. Prefer a candidate whose SQFT exists in the
+  // report summary and require the unit token itself to contain a digit.
+  const alphaUnitMatches = [
+    ...block.matchAll(
+      /(\d{3,4})([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+)\b/g
+    ),
+  ].filter((match) => /\d/.test(match[2]));
+
+  const alphaUnitMatch =
+    alphaUnitMatches.find((match) =>
+      summarySqftValues.has(match[1])
+    ) ??
+    (summarySqftValues.size === 0
+      ? alphaUnitMatches[0]
+      : undefined);
+
+  if (alphaUnitMatch) {
+    return {
+      sqftText: alphaUnitMatch[1],
+      unit: alphaUnitMatch[2],
+    };
+  }
+
+  // Numeric unit prefixes are ambiguous after PDF text extraction because
+  // the SQFT and unit columns can be concatenated (e.g. 708401-1101).
+  const numericTokenMatch = block.match(
+    /(\d{4,12})(-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b/
+  );
+
+  if (!numericTokenMatch) {
+    return null;
+  }
+
+  const leadingDigits = numericTokenMatch[1];
+  const dashTail = numericTokenMatch[2];
+
+  // Prefer an SQFT value explicitly present in the OneSite summary.
+  const summaryMatches = [...summarySqftValues]
+    .filter(
+      (sqftText) =>
+        leadingDigits.startsWith(sqftText) &&
+        leadingDigits.length > sqftText.length
+    )
+    .sort((left, right) => right.length - left.length);
+
+  for (const sqftText of summaryMatches) {
+    const unitPrefix = leadingDigits.slice(sqftText.length);
+
+    if (unitPrefix) {
+      return {
+        sqftText,
+        unit: `${unitPrefix}${dashTail}`,
+      };
+    }
+  }
+
+  // Fallback for OneSite files whose summary cannot be read.  Apartment SQFT
+  // values in these reports are normally 3-4 digits.  Score candidate splits
+  // conservatively instead of greedily consuming digits from the unit prefix.
+  const candidates: Array<{
+    sqftText: string;
+    unit: string;
+    score: number;
+  }> = [];
+
+  for (const splitAt of [3, 4]) {
+    if (leadingDigits.length <= splitAt) {
+      continue;
+    }
+
+    const sqftText = leadingDigits.slice(0, splitAt);
+    const sqft = Number(sqftText);
+    const unitPrefix = leadingDigits.slice(splitAt);
+
+    if (!Number.isFinite(sqft) || sqft < 200 || sqft > 3000 || !unitPrefix) {
+      continue;
+    }
+
+    let score = 0;
+
+    // A leading zero is legal, but when another plausible split preserves a
+    // normal numeric unit prefix it is a better fit for OneSite data.
+    if (!unitPrefix.startsWith("0")) {
+      score += 2;
+    }
+
+    // Most multifamily units are below 2,000 SQFT; this only breaks ties when
+    // the source summary is unavailable.
+    if (sqft <= 2000) {
+      score += 1;
+    }
+
+    candidates.push({
+      sqftText,
+      unit: `${unitPrefix}${dashTail}`,
+      score,
+    });
+  }
+
+  candidates.sort((left, right) => {
+    if (left.score !== right.score) {
+      return right.score - left.score;
+    }
+
+    return Number(left.sqftText) - Number(right.sqftText);
+  });
+
+  return candidates[0] ?? null;
+}
+
+
+function recoverOneSiteUnitTypeFromPages(
+  pages: string[],
+  unit: string,
+  sqft: number | string | null,
+  summaryFloorplans: string[],
+  summaryFloorplanRecords: Array<{ floorplan: string; sqft: string }>
+): string {
+  const escapedUnit = unit.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+
+  const sqftText =
+    typeof sqft === "number"
+      ? String(Math.trunc(sqft))
+      : String(sqft ?? "").trim();
+
+  const sqftMatchedFloorplans = [
+    ...new Set(
+      summaryFloorplanRecords
+        .filter((record) => record.sqft === sqftText)
+        .map((record) => record.floorplan)
+    ),
+  ].sort((left, right) => right.length - left.length);
+
+  // Strongest path: use the report summary as the vocabulary, narrow it by
+  // the unit's SQFT when possible, then choose the closest floorplan token on
+  // either side of the unit. Some OneSite PDFs extract columns in visual order
+  // (floorplan before designation/SQFT), while others glue designation/floorplan
+  // after the unit token. Looking both directions prevents boundary rows from
+  // borrowing the next physical unit's floorplan.
+  const candidateFloorplans =
+    sqftMatchedFloorplans.length > 0
+      ? sqftMatchedFloorplans
+      : summaryFloorplans;
+
+  if (candidateFloorplans.length > 0) {
+    for (const page of pages) {
+      if (!page.includes(unit)) {
+        continue;
+      }
+
+      const normalized = page.replace(/\s+/g, " ").trim();
+      const unitPosition = normalized.indexOf(unit);
+
+      if (unitPosition < 0) {
+        continue;
+      }
+
+      const windowStart = Math.max(0, unitPosition - 120);
+      const windowEnd = Math.min(
+        normalized.length,
+        unitPosition + unit.length + 160
+      );
+      const localText = normalized.slice(windowStart, windowEnd);
+      const lowerLocalText = localText.toLowerCase();
+      const localUnitStart = unitPosition - windowStart;
+      const localUnitEnd = localUnitStart + unit.length;
+
+      const matches: Array<{
+        floorplan: string;
+        distance: number;
+      }> = [];
+
+      for (const floorplan of candidateFloorplans) {
+        const needle = floorplan.toLowerCase();
+        let fromIndex = 0;
+
+        while (fromIndex < lowerLocalText.length) {
+          const index = lowerLocalText.indexOf(needle, fromIndex);
+
+          if (index < 0) {
+            break;
+          }
+
+          const endIndex = index + needle.length;
+          const distance =
+            endIndex <= localUnitStart
+              ? localUnitStart - endIndex
+              : index >= localUnitEnd
+                ? index - localUnitEnd
+                : 0;
+
+          matches.push({
+            floorplan,
+            distance,
+          });
+
+          fromIndex = index + 1;
+        }
+      }
+
+      matches.sort((left, right) => {
+        if (left.distance !== right.distance) {
+          return left.distance - right.distance;
+        }
+
+        return right.floorplan.length - left.floorplan.length;
+      });
+
+      if (matches.length > 0 && matches[0].distance <= 80) {
+        return matches[0].floorplan;
+      }
+    }
+  }
+
+  // Fallback for OneSite files whose summary cannot be read.
+  const afterUnitPattern = new RegExp(
+    `${escapedUnit}\\s*(?:N\\/A|Affordable)\\s*` +
+      `([A-Za-z0-9][A-Za-z0-9/.-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9/.-]*){0,5}?)` +
+      `(?=\\s+\\(?-?[\\d,]+\\.\\d{2}\\)?\\b|\\s+\\d{2}\\/\\d{2}\\/\\d{4}\\b|\\s*\\*)`,
+    "i"
+  );
+
+  const beforeDesignationPattern = new RegExp(
+    `\\b${escapedUnit}\\b\\s+` +
+      `([A-Za-z0-9][A-Za-z0-9/.-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9/.-]*){0,5}?)` +
+      `\\s+(?:N\\/A|Affordable)\\s+\\d{3,4}\\s+` +
+      `(?:Occupied-NTV-Leased|Occupied-NTV|Occupied|Vacant-Leased|Vacant|Admin\\/Down|Down|Model)\\b`,
+    "i"
+  );
+
+  for (const page of pages) {
+    if (!page.includes(unit)) {
+      continue;
+    }
+
+    const normalized = page.replace(/\s+/g, " ").trim();
+    const match =
+      normalized.match(afterUnitPattern) ??
+      normalized.match(beforeDesignationPattern);
+
+    if (match) {
+      const raw = match[1].replace(/\s+/g, " ").trim();
+
+      if (summaryFloorplans.length > 0) {
+        const exactPrefix = summaryFloorplans.find((floorplan) =>
+          raw.toLowerCase().startsWith(floorplan.toLowerCase())
+        );
+
+        if (exactPrefix) {
+          return exactPrefix;
+        }
+      }
+
+      return raw;
+    }
+  }
+
+  return "";
+}
+
 function extractOneSiteUnits(
   pages: string[],
   chargeCodes: Set<string>
@@ -541,13 +895,20 @@ function extractOneSiteUnits(
   const nonCurrentResidentPattern = /\b(?:Former|Applicant)\b/i;
 
   // OneSite/unpdf commonly glues the SQFT directly to the unit number:
-  //   6401-301  -> sqft 640, unit 1-301
-  //   5821-101  -> sqft 582, unit 1-101
-  // It may also glue the resident name before that token:
-  //   Wood, Jackie5821-101
-  // Do not require a word boundary before the SQFT digits for that reason.
-  const sqftAndUnitPattern =
-    /(\d{3,5})([A-Za-z0-9]+(?:-[A-Za-z0-9]+)+)\b/;
+  //   6401-301       -> sqft 640, unit 1-301
+  //   5821-101       -> sqft 582, unit 1-101
+  //   708401-1101    -> sqft 708, unit 401-1101
+  //
+  // The old greedy regex could misread the third example as
+  // sqft 70840 + unit 1-1101.  Use summary SQFT values as the strongest
+  // split hint, with a conservative residential-SQFT fallback when a
+  // summary is unavailable.
+  const summarySqftValues = detectOneSiteSummarySqftValues(pages);
+  const summaryFloorplanRecords =
+    detectOneSiteSummaryFloorplanRecords(pages);
+  const summaryFloorplans = detectOneSiteSummaryFloorplans(
+    summaryFloorplanRecords
+  );
 
   const invalidUnitTokens = new Set([
     "occupied-ntv-leased",
@@ -596,12 +957,18 @@ function extractOneSiteUnits(
     let sqft: number | string | null = null;
 
     // PRIMARY PATH: parse the combined SQFT + physical-unit token.
-    // This fixes Oak Tree and also preserves the San Juan layout.
-    const sqftUnitMatch = block.match(sqftAndUnitPattern);
+    // This preserves Oak Tree/San Juan while also handling building-prefixed
+    // units such as Western's 401-1101 correctly.
+    const sqftUnitMatch = parseOneSiteSqftAndUnitToken(
+      block,
+      summarySqftValues
+    );
 
     if (sqftUnitMatch) {
-      sqft = parseMoney(sqftUnitMatch[1]) ?? sqftUnitMatch[1];
-      unit = sqftUnitMatch[2];
+      sqft =
+        parseMoney(sqftUnitMatch.sqftText) ??
+        sqftUnitMatch.sqftText;
+      unit = sqftUnitMatch.unit;
     } else {
       // Fallback for a OneSite variation where SQFT and unit are not glued.
       // Explicitly reject status strings so a status can never become a unit
@@ -660,11 +1027,66 @@ function extractOneSiteUnits(
         : "";
 
     const floorplanMatch = afterUnit.match(
-      /(?:Affordable|N\/A)\s*([A-Za-z0-9]+(?:[A-Za-z0-9/-]*[A-Za-z0-9])?)/i
+      /(?:Affordable|N\/A)\s*([A-Za-z0-9][A-Za-z0-9/-]*(?:\s+[A-Za-z0-9][A-Za-z0-9/-]*){0,4}?)(?=\s+\(?-?[\d,]+\.\d{2}\)?\b)/i
     );
 
     if (floorplanMatch) {
-      unitType = floorplanMatch[1];
+      unitType = floorplanMatch[1]
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    // A detail-line regex can occasionally borrow the neighboring unit's
+    // floorplan when OneSite's PDF text layer reorders/glues columns at a
+    // floorplan transition. Validate any initially parsed floorplan against
+    // the source summary's SQFT mapping before accepting it. If the pair is
+    // impossible (for example 0 BR LP with 507 SQFT), discard it and let the
+    // summary-aware recovery path resolve the correct floorplan.
+    if (
+      unitType &&
+      sqft !== null &&
+      summaryFloorplanRecords.length > 0
+    ) {
+      const parsedSqftText =
+        typeof sqft === "number"
+          ? String(Math.trunc(sqft))
+          : String(sqft).trim();
+      const exactParsedFloorplan = summaryFloorplans.find((floorplan) =>
+        unitType.toLowerCase().startsWith(floorplan.toLowerCase())
+      );
+
+      if (exactParsedFloorplan) {
+        const floorplanMatchesSqft = summaryFloorplanRecords.some(
+          (record) =>
+            record.floorplan.toLowerCase() ===
+              exactParsedFloorplan.toLowerCase() &&
+            record.sqft === parsedSqftText
+        );
+
+        if (!floorplanMatchesSqft) {
+          unitType = "";
+        }
+      }
+    }
+
+    if (!unitType) {
+      unitType = recoverOneSiteUnitTypeFromPages(
+        pages,
+        unit,
+        sqft,
+        summaryFloorplans,
+        summaryFloorplanRecords
+      );
+    }
+
+    if (unitType && summaryFloorplans.length > 0) {
+      const exactFloorplan = summaryFloorplans.find((floorplan) =>
+        unitType.toLowerCase().startsWith(floorplan.toLowerCase())
+      );
+
+      if (exactFloorplan) {
+        unitType = exactFloorplan;
+      }
     }
 
     let residentName = "";
@@ -735,12 +1157,17 @@ function extractOneSiteUnits(
     }
 
     // MARKET RENT
-    const residentMarketMatch = block.match(
-      /RESIDENT(-?[\d,]+\.\d{2})/i
+    // OneSite's extracted text commonly places the current subjournal token
+    // immediately before the Market + Addl. amount. Most current rows use
+    // RESIDENT, but fully subsidized units can begin with SUBSIDY instead
+    // (for example Western unit 415-4120). Treat both current subjournals as
+    // valid anchors so Market Rent is not left blank for subsidy-only rows.
+    const currentJournalMarketMatch = block.match(
+      /(?:RESIDENT|SUBSIDY)(-?[\d,]+\.\d{2})/i
     );
 
-    if (residentMarketMatch) {
-      marketRent = parseMoney(residentMarketMatch[1]);
+    if (currentJournalMarketMatch) {
+      marketRent = parseMoney(currentJournalMarketMatch[1]);
     } else {
       const vacantMarketMatch = line.match(
         /(-?[\d,]+\.\d{2})VACANT/i
@@ -785,6 +1212,28 @@ function extractOneSiteUnits(
     const recordLines = lines.slice(index, recordEndIndex);
 
     for (const rentLine of recordLines) {
+      // A star does NOT always mean "historical". OneSite can star a current
+      // resident's charge (for example an Occupied-NTV subsidy line) while
+      // also starring historical/former charges that appear before the
+      // extracted Former row. Keep a starred charge when it clearly belongs
+      // to the current resident; otherwise ignore it.
+      if (rentLine.includes("*") && residentName) {
+        const residentTokens = residentName
+          .toLowerCase()
+          .match(/[a-z0-9]+/g)
+          ?.filter((token) => token.length >= 3) ?? [];
+
+        const normalizedRentLine = rentLine.toLowerCase();
+
+        const belongsToCurrentResident = residentTokens.some(
+          (token) => normalizedRentLine.includes(token)
+        );
+
+        if (!belongsToCurrentResident) {
+          continue;
+        }
+      }
+
       for (const candidateCode of chargeCodes) {
         const escapedCode = candidateCode.replace(
           /[.*+?^${}()|[\]\\]/g,
@@ -806,21 +1255,27 @@ function extractOneSiteUnits(
         }
 
         // Only inspect numeric values on the same extracted line as the
-        // accepted charge code. In this OneSite extraction the second number
-        // after the code is the Lease Rent amount for standard rows.
+        // accepted charge code. OneSite's text layer commonly orders the
+        // monetary columns as Dep On Hand, Total Billing, Other Charges,
+        // Lease Rent. On ordinary rows Total Billing equals Lease Rent, which
+        // hid this distinction. Utility-adjusted rows expose it, so prefer the
+        // fourth numeric value when present and keep the old second-value
+        // fallback for report variants that expose fewer columns.
         const afterCode = rentLine.slice(
           codeMatch.index + codeMatch[0].length
         );
 
         const amounts = afterCode.match(
-          /-?[\d,]+\.\d{2}/g
+          /\(?-?[\d,]+\.\d{2}\)?/g
         );
 
         if (!amounts || amounts.length < 2) {
           continue;
         }
 
-        const amount = parseMoney(amounts[1]) ?? 0;
+        const leaseRentText =
+          amounts.length >= 4 ? amounts[3] : amounts[1];
+        const amount = parseMoney(leaseRentText) ?? 0;
         rentAmount += amount;
 
         if (!matchedChargeCodes.includes(candidateCode)) {
