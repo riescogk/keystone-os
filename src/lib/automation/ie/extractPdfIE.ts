@@ -184,13 +184,13 @@ function findT12Label(
     return "T12";
   }
 
-  const startMonth =
-    match[1].charAt(0).toUpperCase() +
-    match[1].slice(1, 3).toLowerCase();
+  const endMonth =
+    match[3].charAt(0).toUpperCase() +
+    match[3].slice(1, 3).toLowerCase();
 
-  const startYear = match[2];
+  const endYear = match[4];
 
-  return `T12 ${startMonth} '${startYear.slice(-2)}`;
+  return `T12 ${endMonth} '${endYear.slice(-2)}`;
 }
 
 function parseAnnualRows(
@@ -336,7 +336,7 @@ function parseT12Rows(
   const rows: PdfIELineItem[] = [];
 
   const accountRegex =
-    /^(\d{4,}-\d{3})\s+(.+)$/;
+    /^(\d{4,5}-\d{2,3})\s+(.+)$/;
 
   for (const page of pages) {
     const lines = page
@@ -364,15 +364,20 @@ function parseT12Rows(
       const accountMatch =
         line.match(accountRegex);
 
-      if (!accountMatch) {
-        continue;
-      }
-
+      /*
+       * Some Yardi / Residential-style statements do not print a GL
+       * account code at all.  Their rows begin directly with the line
+       * item name, followed by 12 monthly values and a final Total.
+       *
+       * Keep the existing coded behavior when a code is present, but
+       * allow the exact same monthly/Total structure to be parsed with
+       * accountCode = null when the source genuinely omits codes.
+       */
       const accountCode =
-        accountMatch[1];
+        accountMatch?.[1] ?? null;
 
       const remainder =
-        accountMatch[2];
+        accountMatch?.[2] ?? line;
 
       const parts =
         remainder.split(/\s+/);
@@ -461,6 +466,305 @@ function parseT12Rows(
   return rows;
 }
 
+
+interface QuickBooksPeriod {
+  startMonth: number;
+  startYear: number;
+  endMonth: number;
+  endYear: number;
+}
+
+const QUICKBOOKS_MONTHS: Record<string, number> = {
+  january: 1,
+  february: 2,
+  march: 3,
+  april: 4,
+  may: 5,
+  june: 6,
+  july: 7,
+  august: 8,
+  september: 9,
+  october: 10,
+  november: 11,
+  december: 12,
+};
+
+function findQuickBooksPeriod(
+  pages: string[]
+): QuickBooksPeriod | null {
+  const text = pages.join("\n");
+
+  const crossYearMatch = text.match(
+    /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+((?:19|20)\d{2})\s+through\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+((?:19|20)\d{2})\b/i
+  );
+
+  if (crossYearMatch) {
+    const startMonth =
+      QUICKBOOKS_MONTHS[crossYearMatch[1].toLocaleLowerCase()];
+    const startYear = Number(crossYearMatch[2]);
+    const endMonth =
+      QUICKBOOKS_MONTHS[crossYearMatch[3].toLocaleLowerCase()];
+    const endYear = Number(crossYearMatch[4]);
+
+    if (
+      startMonth &&
+      endMonth &&
+      Number.isFinite(startYear) &&
+      Number.isFinite(endYear)
+    ) {
+      return {
+        startMonth,
+        startYear,
+        endMonth,
+        endYear,
+      };
+    }
+  }
+
+  const sameYearMatch = text.match(
+    /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+through\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+((?:19|20)\d{2})\b/i
+  );
+
+  if (!sameYearMatch) {
+    return null;
+  }
+
+  const startMonth =
+    QUICKBOOKS_MONTHS[sameYearMatch[1].toLocaleLowerCase()];
+  const endMonth =
+    QUICKBOOKS_MONTHS[sameYearMatch[2].toLocaleLowerCase()];
+  const year = Number(sameYearMatch[3]);
+
+  if (!startMonth || !endMonth || !Number.isFinite(year)) {
+    return null;
+  }
+
+  return {
+    startMonth,
+    startYear: year,
+    endMonth,
+    endYear: year,
+  };
+}
+
+function isQuickBooksProfitLoss(
+  pages: string[]
+): boolean {
+  const text = pages.join("\n");
+
+  return (
+    /\bProfit\s*&\s*Loss\b/i.test(text) &&
+    findQuickBooksPeriod(pages) !== null
+  );
+}
+
+function findQuickBooksPropertyName(
+  pages: string[]
+): string {
+  for (const page of pages) {
+    const lines = page
+      .split(/\r?\n/)
+      .map(cleanLine)
+      .filter(Boolean);
+
+    const titleIndex = lines.findIndex((line) =>
+      /\bProfit\s*&\s*Loss\b/i.test(line)
+    );
+
+    if (titleIndex <= 0) {
+      continue;
+    }
+
+    for (let index = titleIndex - 1; index >= 0; index -= 1) {
+      const candidate = cleanLine(
+        lines[index].replace(
+          /^\d{1,2}\/\d{1,2}\/\d{2,4}\s+/,
+          ""
+        )
+      );
+
+      if (
+        candidate &&
+        !/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(candidate) &&
+        !/^Page\s+\d+(?:\s+of\s+\d+)?$/i.test(candidate)
+      ) {
+        return candidate;
+      }
+    }
+  }
+
+  /*
+   * Some PDF text extractors place the date and property on one line
+   * immediately before the Profit & Loss title. Fall back to searching
+   * the opening lines for a plausible non-title value.
+   */
+  const firstLines = (pages[0] ?? "")
+    .split(/\r?\n/)
+    .map(cleanLine)
+    .filter(Boolean)
+    .slice(0, 8);
+
+  for (const rawLine of firstLines) {
+    const candidate = cleanLine(
+      rawLine.replace(
+        /^\d{1,2}\/\d{1,2}\/\d{2,4}\s+/,
+        ""
+      )
+    );
+
+    if (
+      candidate &&
+      !/\bProfit\s*&\s*Loss\b/i.test(candidate) &&
+      !/\bthrough\b/i.test(candidate) &&
+      !/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(candidate)
+    ) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function quickBooksPeriodMonthCount(
+  period: QuickBooksPeriod
+): number {
+  return (
+    (period.endYear - period.startYear) * 12 +
+    (period.endMonth - period.startMonth) +
+    1
+  );
+}
+
+function quickBooksT12Label(
+  period: QuickBooksPeriod
+): string {
+  const monthNames = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+
+  return `T12 ${monthNames[period.endMonth - 1]} '${String(
+    period.endYear
+  ).slice(-2)}`;
+}
+
+function isQuickBooksNoise(line: string): boolean {
+  return (
+    /^Profit\s*&\s*Loss$/i.test(line) ||
+    /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(line) ||
+    /^Page\s+\d+(?:\s+of\s+\d+)?$/i.test(line) ||
+    /^(?:January|February|March|April|May|June|July|August|September|October|November|December)(?:\s+\d{4})?\s+through\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}$/i.test(
+      line
+    ) ||
+    /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*-\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2,4}$/i.test(
+      line
+    )
+  );
+}
+
+function parseQuickBooksRows(
+  pages: string[],
+  expectedNumericCount: number
+): PdfIELineItem[] {
+  const rows: PdfIELineItem[] = [];
+
+  for (const page of pages) {
+    const lines = page
+      .split(/\r?\n/)
+      .map(cleanLine)
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (isQuickBooksNoise(line)) {
+        continue;
+      }
+
+      const parts = line.split(/\s+/);
+      const reversedValues: number[] = [];
+      let index = parts.length - 1;
+
+      while (
+        index >= 0 &&
+        reversedValues.length < expectedNumericCount
+      ) {
+        const parsed = parseNumber(parts[index]);
+
+        if (parsed === null) {
+          break;
+        }
+
+        reversedValues.push(parsed);
+        index -= 1;
+      }
+
+      if (reversedValues.length !== expectedNumericCount) {
+        continue;
+      }
+
+      const rowText = cleanLine(
+        parts.slice(0, index + 1).join(" ")
+      );
+
+      if (!rowText) {
+        continue;
+      }
+
+      const values = reversedValues.reverse();
+      const outputValue = values[values.length - 1];
+
+      const codedTotal = rowText.match(
+        /^Total\s+(\d{4,8})\s*(?:[·•]\s*)?(.+)$/i
+      );
+
+      if (codedTotal) {
+        rows.push({
+          accountCode: codedTotal[1],
+          name: `Total ${cleanLine(codedTotal[2])}`,
+          values: [outputValue],
+        });
+        continue;
+      }
+
+      const codedRow = rowText.match(
+        /^(\d{4,8})\s*(?:[·•]\s*)?(.+)$/
+      );
+
+      if (codedRow) {
+        rows.push({
+          accountCode: codedRow[1],
+          name: cleanLine(codedRow[2]),
+          values: [outputValue],
+        });
+        continue;
+      }
+
+      /*
+       * QuickBooks also prints valued summary lines without an account
+       * code, such as Total Income, Net Ordinary Income, and Net Income.
+       */
+      if (/^(?:Total|Net)\b/i.test(rowText)) {
+        rows.push({
+          accountCode: null,
+          name: rowText,
+          values: [outputValue],
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
 function isLouisburgCashFlow(
   pages: string[]
 ): boolean {
@@ -529,10 +833,10 @@ function findLouisburgT12Label(
   }
 
   const month =
-    match[1].charAt(0).toUpperCase() +
-    match[1].slice(1, 3).toLowerCase();
+    match[3].charAt(0).toUpperCase() +
+    match[3].slice(1, 3).toLowerCase();
 
-  return `T12 ${month} '${match[2].slice(-2)}`;
+  return `T12 ${month} '${match[4].slice(-2)}`;
 }
 
 function isLouisburgNoise(
@@ -734,12 +1038,8 @@ function parseYardiBudgetRows(
 ): PdfIELineItem[] {
   const rows: PdfIELineItem[] = [];
 
-  const valuePattern =
-    String.raw`-?[\d,]+(?:\.\d+)?`;
-
-  const rowRegex = new RegExp(
-    `^(\\d{5}-\\d{3})\\s+(.+?)\\s+(${valuePattern}(?:\\s+${valuePattern}){12})$`
-  );
+  const accountRegex =
+    /^(\d{4,5}-\d{2,3})\s+(.+)$/;
 
   for (const page of pages) {
     const lines = page
@@ -748,33 +1048,78 @@ function parseYardiBudgetRows(
       .filter(Boolean);
 
     for (const line of lines) {
-      const match = line.match(rowRegex);
-
-      if (!match) {
+      if (isPageNoise(line)) {
         continue;
       }
 
-      const accountCode = match[1];
-      const name = cleanLine(match[2]);
-
-      const numbers =
-        match[3].match(
-          new RegExp(valuePattern, "g")
-        ) ?? [];
-
-      // 12 monthly values + final Total
-      if (numbers.length !== 13) {
+      if (
+        /^Budget$/i.test(line) ||
+        /^.+\s+\([^)]+\)$/.test(line) ||
+        /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}/i.test(
+          line
+        )
+      ) {
         continue;
       }
 
-      const total = parseNumber(
-        numbers[12]
-      );
+      const accountMatch =
+        line.match(accountRegex);
+
+      const accountCode =
+        accountMatch?.[1] ?? null;
+
+      const remainder =
+        accountMatch?.[2] ?? line;
+
+      const parts =
+        remainder.split(/\s+/);
+
+      /*
+       * Yardi budgets may be coded or code-less, but both layouts use
+       * the same 12 monthly values + final Total shape.  Read the 13
+       * numeric values from the end so descriptions can contain spaces
+       * and punctuation without special-casing the property.
+       */
+      const reversedValues:
+        Array<number | null> = [];
+
+      let index = parts.length - 1;
+
+      while (
+        index >= 0 &&
+        reversedValues.length < 13
+      ) {
+        const parsed =
+          parseNumber(parts[index]);
+
+        if (parsed === null) {
+          break;
+        }
+
+        reversedValues.push(parsed);
+        index -= 1;
+      }
+
+      const values =
+        reversedValues.reverse();
+
+      if (values.length !== 13) {
+        continue;
+      }
+
+      const name = parts
+        .slice(0, index + 1)
+        .join(" ")
+        .trim();
+
+      if (!name) {
+        continue;
+      }
 
       rows.push({
         accountCode,
         name,
-        values: [total],
+        values: [values[12]],
       });
     }
   }
@@ -782,6 +1127,26 @@ function parseYardiBudgetRows(
   return rows;
 }
 
+
+function findSingleYearStatementYear(
+  pages: string[]
+): string | null {
+  const text = pages.join("\n");
+
+  if (!/(?:statement|cash flow)\s*\(12 months\)/i.test(text)) {
+    return null;
+  }
+
+  const match = text.match(
+    /Period\s*=\s*Jan(?:uary)?\s+((?:19|20)\d{2})\s*[-–]\s*Dec(?:ember)?\s+((?:19|20)\d{2})/i
+  );
+
+  if (!match || match[1] !== match[2]) {
+    return null;
+  }
+
+  return match[1];
+}
 
 function detectAvignonReportType(
   pages: string[]
@@ -1287,6 +1652,70 @@ export async function extractPdfIE(
     );
   }
 
+
+  /*
+   * ============================================================
+   * QUICKBOOKS / PROFIT & LOSS
+   * ============================================================
+   *
+   * Supports:
+   * - full-calendar-year Profit & Loss PDFs (Annual)
+   * - rolling 12-month Profit & Loss PDFs with 12 months + TOTAL (T12)
+   *
+   * Scanned/image-only QuickBooks PDFs remain unsupported and are handled
+   * by the existing selectable-text guard above.
+   */
+  if (isQuickBooksProfitLoss(extraction.pages)) {
+    const propertyName =
+      findQuickBooksPropertyName(extraction.pages);
+    const period =
+      findQuickBooksPeriod(extraction.pages);
+
+    if (!propertyName || !period) {
+      throw new Error(
+        "The QuickBooks Profit & Loss PDF was recognized, but its property name or report period could not be determined."
+      );
+    }
+
+    const monthCount =
+      quickBooksPeriodMonthCount(period);
+
+    const isAnnual =
+      period.startMonth === 1 &&
+      period.endMonth === 12 &&
+      period.startYear === period.endYear;
+
+    const isT12 = monthCount === 12;
+
+    if (!isAnnual && !isT12) {
+      throw new Error(
+        "The QuickBooks Profit & Loss PDF was recognized, but it is not a full-calendar-year Annual or a 12-month T12 report."
+      );
+    }
+
+    const rows = parseQuickBooksRows(
+      extraction.pages,
+      isAnnual ? 1 : 13
+    );
+
+    if (rows.length === 0) {
+      throw new Error(
+        "The QuickBooks Profit & Loss PDF was recognized, but no valued I&E rows could be extracted."
+      );
+    }
+
+    return {
+      propertyName,
+      reportType: isAnnual ? "annual" : "t12",
+      labels: isAnnual
+        ? [String(period.endYear)]
+        : [quickBooksT12Label(period)],
+      rows,
+      pageCount: extraction.pageCount,
+      warnings: [],
+    };
+  }
+
   /*
  * WILLOW POINT / BUDGET COMPARISON CASH FLOW
  *
@@ -1522,6 +1951,33 @@ if (isYardiBudget(extraction.pages)) {
     propertyName,
     reportType: "budget",
     labels: [label],
+    rows,
+    pageCount: extraction.pageCount,
+    warnings: [],
+  };
+}
+
+const singleYearStatement =
+  findSingleYearStatementYear(
+    extraction.pages
+  );
+
+if (singleYearStatement) {
+  const rows =
+    parseT12Rows(
+      extraction.pages
+    );
+
+  if (rows.length === 0) {
+    throw new Error(
+      "No I&E rows were found in the one-year Statement PDF."
+    );
+  }
+
+  return {
+    propertyName,
+    reportType: "annual",
+    labels: [singleYearStatement],
     rows,
     pageCount: extraction.pageCount,
     warnings: [],

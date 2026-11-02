@@ -7,7 +7,6 @@ import {
   currencyValuesEqual,
   isBlankVsZero,
   normalizeChargeCodes,
-  normalizeInternalNumber,
   normalizeMoney,
   normalizePeriodLabel,
   normalizeResidentName,
@@ -144,6 +143,7 @@ export function compareRentRollDocuments(
       [keyof RentRollVerificationUnit, (value: unknown) => unknown]
     > = [
       ["unitType", normalizeText],
+      ["sqft", normalizeText],
       ["unitCategory", normalizeText],
       ["residentName", normalizeResidentName],
     ];
@@ -159,17 +159,6 @@ export function compareRentRollDocuments(
           ...rentRollEvidence(aiUnit),
         });
       }
-    }
-
-    if (!scalarValuesEqual(keystoneUnit.sqft, aiUnit.sqft)) {
-      discrepancies.push({
-        recordKey: key,
-        field: "sqft",
-        keystoneValue: keystoneUnit.sqft,
-        aiValue: aiUnit.sqft,
-        type: "value_mismatch",
-        ...rentRollEvidence(aiUnit),
-      });
     }
 
     for (const field of ["marketRent", "rentAmount"] as const) {
@@ -204,7 +193,20 @@ function ieBaseIdentity(row: IEVerificationRow): string {
   const lineItem = normalizeText(row.lineItem) ?? "<blank-line-item>";
   const accountCode = normalizeText(row.accountCode);
 
-  return accountCode ? `${accountCode}|${lineItem}` : lineItem;
+  /*
+   * Explicit GL/account code is the primary I&E row identity.
+   *
+   * The same account can legitimately be described differently between
+   * annual statements (for example "Deposit Forfeitures" vs
+   * "Forfeitures"). Those wording changes must not create a pair of
+   * false missing-record discrepancies when the account code and values
+   * agree. Duplicate occurrences of the same account code are still kept
+   * separate by keyedIERows() below.
+   *
+   * Rows without an explicit account code continue to use normalized
+   * line-item text as their identity.
+   */
+  return accountCode ?? lineItem;
 }
 
 function keyedIERows(rows: IEVerificationRow[]): KeyedRecord<IEVerificationRow>[] {
@@ -301,20 +303,6 @@ export function compareIEDocuments(
 
     if (!keystoneRow || !aiRow) {
       continue;
-    }
-
-    if (
-      normalizeInternalNumber(keystoneRow.internalNumber) !==
-      normalizeInternalNumber(aiRow.internalNumber)
-    ) {
-      discrepancies.push({
-        recordKey: key,
-        field: "internalNumber",
-        keystoneValue: keystoneRow.internalNumber,
-        aiValue: aiRow.internalNumber,
-        type: "mapping_mismatch",
-        ...ieEvidence(aiRow),
-      });
     }
 
     if (keystoneRow.isSummary !== aiRow.isSummary) {

@@ -108,7 +108,7 @@ const IE_SCHEMA = {
         type: "object",
         properties: {
           accountCode: { type: ["string", "null"] },
-          internalNumber: { type: ["string", "number", "null"] },
+          internalNumber: { type: "null" },
           lineItem: { type: "string" },
           values: {
             type: "array",
@@ -151,13 +151,12 @@ const IE_SCHEMA = {
 
 const IE_INSTRUCTIONS = `You are Keystone's independent I&E verification analyst.
 
-You are a second reader. You MUST form your answer only from the original I&E source files and the separate Internal Number reference workbook supplied to you. You are not being shown Keystone's output and must not assume what Keystone produced.
+You are a second reader. You MUST form your answer only from the original I&E property source files supplied to you. You are not being shown Keystone's output and must not assume what Keystone produced.
 
 Goal: independently reconstruct the canonical Combined I&E table that should result from the supplied property statements.
 
 SOURCE CLASSIFICATION
 - Classify each original property source as annual, separate_annual, t12, budget, annualized, or unknown.
-- The Internal Number mapping/reference workbook is NOT a property source. Never include it in sources.
 - All property sources should belong to one property. If names differ slightly, use the best property name supported by the documents and note meaningful uncertainty in warnings.
 
 CANONICAL PERIOD LABELS
@@ -169,17 +168,22 @@ CANONICAL PERIOD LABELS
 
 ROW UNIVERSE AND MERGING
 - The base row universe is the union of valued rows from Annual/separate annual sources and the T12 source.
-- Budget and Annualized sources contribute values only to matching base rows; they do NOT introduce brand-new rows absent from Annual/T12.
-- Preserve duplicate line-item occurrences in source order. Never collapse duplicate names into one row.
-- Keep the line item text faithfully, trimming only incidental whitespace.
-- When a T12 row supplies an explicit account code, use it. If the final base row has no supported account code, use null rather than guessing.
+- Annualized sources contribute values only to matching base rows; they do NOT introduce brand-new rows absent from Annual/T12.
+- Budget handling is deliberately conservative and lossless. A Budget row may populate an existing base row ONLY when the identity is unambiguous: (a) the same explicit account code AND same line-item wording, paired by occurrence, or (b) when there is no account code, the exact normalized line-item wording appears exactly once in the base rows and exactly once in the Budget.
+- Do NOT semantically merge Budget aliases, synonyms, abbreviations, or merely similar descriptions into Annual/T12 rows. Examples such as "Unit Contract Painting" vs "Unit Contract Painting/Repair", "Common Area Cleaning" vs "Common Area & Mat Cleaning", or "NET RES PROP RENTAL REV" vs "NET RENTAL INCOME" remain separate rows unless their exact identity rule above is satisfied.
+- If a Budget row cannot be matched unambiguously under that rule, KEEP IT as a separate Budget-only row. Set every Annual/T12/Annualized period for that row to null and put the source Budget total only in the Budget period. Do not drop the row.
+- If an exact code-less Budget label occurs more than once in either the base rows or the Budget, do not guess by occurrence order or section. Preserve the unmatched Budget occurrences as separate Budget-only rows.
+- Across Annual/separate annual sources, an explicit account code is the primary row identity. Match the same account code + occurrence even when the description wording changes between years, and retain the earliest source wording for the canonical line item.
+- If an identical UNIQUE line-item name appears across Annual/separate annual years but the explicit account codes conflict between years, merge those annual values into one canonical row by the identical line-item name and set accountCode to null. Do NOT choose the most frequent, earliest, latest, or otherwise preferred account code. Example: 54010-000 Training & Continuing Education in 2023/2025 and 53215-000 Training & Continuing Education in 2024 becomes one Training & Continuing Education row with accountCode null.
+- Preserve duplicate line-item/account-code occurrences in source order. Never collapse genuinely separate duplicate occurrences into one row.
+- Keep the line item text faithfully, trimming only incidental whitespace and separating an explicitly printed account code from the descriptive line item.
+- When a T12 row supplies an explicit account code, use it. If the final base row has no single account code supported across the merged source rows, use null rather than guessing.
 - For every output row include one value entry for EVERY final periodLabel. Use null when that row has no value for a period. Zero is a real zero and must not become null.
 
-INTERNAL NUMBER MAPPING
-- Use the separate Internal Number reference workbook as the authoritative mapping aid.
-- Summary rows (Total..., Net...) MUST have internalNumber null.
-- For ordinary rows, choose an Internal Number only when the reference workbook supports the mapping with high confidence. Exact/obvious semantic matches are acceptable. If ambiguous, use null instead of guessing.
-- Do not copy account codes into Internal Number unless the reference explicitly supports that mapping.
+INTERNAL NUMBER IS OUT OF SCOPE
+- Do NOT infer, verify, audit, compare, or comment on Internal Number mappings.
+- Internal Number depends on a client-maintained reference and is not part of I&E AI verification.
+- ALWAYS return internalNumber as null for every row, including ordinary rows and summary rows.
 
 KEYSTONE BUSINESS RULES TO RECONSTRUCT INDEPENDENTLY
 - A summary row is a line item equal to Total or Net, or beginning with Total / Net (case-insensitive).
@@ -189,7 +193,7 @@ KEYSTONE BUSINESS RULES TO RECONSTRUCT INDEPENDENTLY
 - Do not invent values that are not present in the source.
 
 EVIDENCE / CONFIDENCE
-- Keep evidence compact. Add sourceName plus page/sheet/row/excerpt when it materially helps verify a difficult extraction or mapping. An empty evidence array is fine for obvious rows.
+- Keep evidence compact. Add sourceName plus page/sheet/row/excerpt when it materially helps verify a difficult extraction. An empty evidence array is fine for obvious rows.
 - explanation should be null for straightforward rows; use a short explanation only for a non-obvious mapping/extraction.
 - confidence is high, medium, low, or null.
 
@@ -541,9 +545,15 @@ export function createOpenAIIEVerificationProvider(
   }
 
   const model = env.OPENAI_AUTOMATION_VERIFY_MODEL?.trim() || DEFAULT_OPENAI_AUTOMATION_VERIFY_MODEL;
-  const timeoutMs = parsePositiveInteger(
-    env.OPENAI_AUTOMATION_VERIFY_TIMEOUT_MS,
-    DEFAULT_OPENAI_AUTOMATION_VERIFY_TIMEOUT_MS
+  // I&E verification can involve several full property statements and a large
+  // structured response. Give it enough time to finish while staying below
+  // the 300-second API route duration. Rent Roll verification is unchanged.
+  const timeoutMs = Math.max(
+    parsePositiveInteger(
+      env.OPENAI_AUTOMATION_VERIFY_TIMEOUT_MS,
+      DEFAULT_OPENAI_AUTOMATION_VERIFY_TIMEOUT_MS
+    ),
+    240_000
   );
   const maxOutputTokens = parsePositiveInteger(
     env.OPENAI_AUTOMATION_VERIFY_MAX_OUTPUT_TOKENS,
@@ -557,23 +567,15 @@ export function createOpenAIIEVerificationProvider(
       if (request.files.length === 0) {
         throw new AIVerificationError("provider_error", "I&E AI verification requires at least one source file.");
       }
-      if (!request.mappingReference) {
-        throw new AIVerificationError(
-          "provider_error",
-          "I&E AI verification requires the Internal Number reference workbook."
-        );
-      }
-
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
         const content = [
           ...request.files.map(inputFilePart),
-          inputFilePart(request.mappingReference),
           {
             type: "input_text",
-            text: `Original property source files: ${request.files.map((file) => file.name).join(", ")}. The file named '${request.mappingReference.name}' is ONLY the Internal Number mapping/reference workbook and must not be listed as a property source. Independently reconstruct the complete canonical Combined I&E table.`,
+            text: `Original property source files: ${request.files.map((file) => file.name).join(", ")}. Independently reconstruct the complete canonical Combined I&E table. Internal Number mapping is out of scope and internalNumber must always be null.`,
           },
         ];
 

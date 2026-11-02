@@ -254,6 +254,23 @@ export default function IEForm() {
 
       const rowCount = response.headers.get("X-IE-Row-Count");
       const encodedProperty = response.headers.get("X-IE-Property");
+      const encodedIncludedFiles = response.headers.get("X-IE-Included-Files");
+
+      let includedFileNames: string[] | null = null;
+
+      if (encodedIncludedFiles) {
+        try {
+          const parsed = JSON.parse(decodeURIComponent(encodedIncludedFiles));
+
+          if (Array.isArray(parsed)) {
+            includedFileNames = parsed.filter(
+              (value): value is string => typeof value === "string"
+            );
+          }
+        } catch {
+          // Fall back to all original files if this optional header is malformed.
+        }
+      }
 
       let propertyName = "";
 
@@ -291,7 +308,28 @@ export default function IEForm() {
       setProcessing(false);
 
       if (runAIVerification) {
-        await runVerification(files, blob, filename, propertyName);
+        const includedNames = includedFileNames
+          ? new Set(includedFileNames)
+          : null;
+
+        const verificationFiles = includedNames
+          ? files.filter((file) => includedNames.has(file.name))
+          : files;
+
+        if (verificationFiles.length > 0) {
+          await runVerification(
+            verificationFiles,
+            blob,
+            filename,
+            propertyName
+          );
+        } else {
+          setVerification(
+            failedVerification(
+              "AI verification was not run because none of the uploaded source files were included in the Keystone workbook."
+            )
+          );
+        }
       } else {
         setVerification({ status: "not_requested" });
       }

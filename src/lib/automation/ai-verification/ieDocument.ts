@@ -176,6 +176,14 @@ export async function ieDocumentFromKeystoneWorkbook(
       values[label] = cellPrimitive(row.getCell(column));
     }
 
+    // Keystone intentionally keeps coded section/header rows in the workbook
+    // for readability. They carry no financial values and are outside the
+    // verifier's canonical valued-row universe, so do not compare them as
+    // missing AI records. Zero remains a real value and is retained.
+    if (Object.values(values).every((value) => value === null)) {
+      continue;
+    }
+
     rows.push({
       accountCode:
         accountCodeValue === null ? null : String(accountCodeValue).trim() || null,

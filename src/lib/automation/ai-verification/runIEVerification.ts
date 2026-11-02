@@ -1,7 +1,6 @@
 import { compareIEDocuments } from "./compare";
 import { AIVerificationError, verificationFailureState } from "./errors";
 import { ieDocumentFromKeystoneWorkbook } from "./ieDocument";
-import { loadIEInternalNumberReference } from "./ieReference";
 import { prepareIESourceFilesForAI } from "./ieSourceFiles";
 import { createOpenAIIEVerificationProvider } from "./openaiIEProvider";
 import type { IEAIVerificationProvider } from "./provider";
@@ -62,12 +61,9 @@ export async function runIEAIVerification(
       );
     }
 
-    const [preparedSourceFiles, mappingReference] = await Promise.all([
-      prepareIESourceFilesForAI(options.sourceFiles),
-      options.mappingReference
-        ? Promise.resolve(options.mappingReference)
-        : loadIEInternalNumberReference(),
-    ]);
+    const preparedSourceFiles = await prepareIESourceFilesForAI(
+      options.sourceFiles
+    );
 
     const [keystoneDocument, aiDocument] = await Promise.all([
       ieDocumentFromKeystoneWorkbook(options.keystoneWorkbookBuffer, {
@@ -76,7 +72,6 @@ export async function runIEAIVerification(
       }),
       provider.extractIE({
         files: preparedSourceFiles,
-        mappingReference,
       }),
     ]);
 

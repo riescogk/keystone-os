@@ -19,6 +19,8 @@ export interface IEProcessResult {
   propertyName: string;
   rowCount: number;
   warnings: string[];
+  includedFileNames: string[];
+  skippedFileNames: string[];
 }
 
 type ReportType =
@@ -37,6 +39,7 @@ interface FileInfo {
 
 interface AnnualRow {
   key: string;
+  accountCode: string | null;
   name: string;
   values: Array<number | null>;
 }
@@ -531,6 +534,7 @@ async function readAnnualReport(
 
     rows.push({
       key: occurrenceKey(name, occurrence),
+      accountCode: null,
       name,
       values,
     });
@@ -643,7 +647,7 @@ function findT12Label(
       );
 
       const match = text.match(
-        /Period\s*=\s*([A-Za-z]{3,9})\s+(\d{4})\s*[-–]/i
+        /Period\s*=\s*[A-Za-z]{3,9}\s+\d{4}\s*[-–]\s*([A-Za-z]{3,9})\s+(\d{4})/i
       );
 
       if (match) {
@@ -656,12 +660,12 @@ function findT12Label(
     }
   }
 
-  const firstMonthColumn = Math.min(...monthColumns);
-  const firstMonthValue = rawCellValue(
-    worksheet.getRow(headerRow).getCell(firstMonthColumn)
+  const lastMonthColumn = Math.max(...monthColumns);
+  const lastMonthValue = rawCellValue(
+    worksheet.getRow(headerRow).getCell(lastMonthColumn)
   );
 
-  const parsed = monthYearFromValue(firstMonthValue);
+  const parsed = monthYearFromValue(lastMonthValue);
 
   if (parsed) {
     return `T12 ${parsed.month} '${parsed.year.slice(-2)}`;
@@ -1102,6 +1106,7 @@ async function combineSeparateAnnuals(
 
   const order: string[] = [];
   const names = new Map<string, string>();
+  const accountCodes = new Map<string, string | null>();
 
   const byYear = reports.map((report) => {
     const map = new Map<string, T12Row>();
@@ -1111,6 +1116,15 @@ async function combineSeparateAnnuals(
 
       if (!names.has(row.key)) {
         names.set(row.key, row.name);
+      }
+
+      if (
+        row.accountCode &&
+        !accountCodes.get(row.key)
+      ) {
+        accountCodes.set(row.key, row.accountCode);
+      } else if (!accountCodes.has(row.key)) {
+        accountCodes.set(row.key, null);
       }
 
       if (!order.includes(row.key)) {
@@ -1123,6 +1137,7 @@ async function combineSeparateAnnuals(
 
   const rows: AnnualRow[] = order.map((key) => ({
     key,
+    accountCode: accountCodes.get(key) ?? null,
     name: names.get(key) ?? "",
     values: byYear.map(
       (yearMap) => yearMap.get(key)?.total ?? null
@@ -1164,6 +1179,7 @@ function pdfRowsToAnnualRows(
 
     return {
       key: occurrenceKey(row.name, occurrence),
+      accountCode: row.accountCode,
       name: row.name,
       values: [...row.values],
     };
@@ -1301,70 +1317,211 @@ async function combineAnnualReports(
     periods.map((period) => period.year);
 
   /*
-   * Build the master row order from all reports.
+   * Annual row identity rules:
+   *
+   * 1. An explicit account code is the strongest identity across years.
+   *    The same code should merge even when wording changes.
+   *
+   * 2. If a normalized line-item name appears at most once in every
+   *    report, that exact name may bridge rows whose account code changed
+   *    between years. When different explicit codes are bridged this way,
+   *    the final Account Code is left blank rather than implying one code
+   *    applied consistently to every year.
+   *
+   * 3. Duplicate names inside a single report are never merged by name.
+   *    They stay distinct and are matched by account code + occurrence, or
+   *    by their existing name occurrence when no account code is present.
    */
-  const order: string[] = [];
-  const names =
-    new Map<string, string>();
+  const nameCountsByReport = new Map<
+    AnnualReport,
+    Map<string, number>
+  >();
+
+  const globalRowsByName = new Map<
+    string,
+    AnnualRow[]
+  >();
 
   for (const report of reports) {
+    const counts = new Map<string, number>();
+
     for (const row of report.rows) {
-      if (!names.has(row.key)) {
-        names.set(
-          row.key,
-          row.name
-        );
+      const normalizedName = normalizeName(row.name);
+      counts.set(
+        normalizedName,
+        (counts.get(normalizedName) ?? 0) + 1
+      );
+
+      const existing =
+        globalRowsByName.get(normalizedName) ?? [];
+      existing.push(row);
+      globalRowsByName.set(normalizedName, existing);
+    }
+
+    nameCountsByReport.set(report, counts);
+  }
+
+  const safeNameBridge = new Set<string>();
+
+  for (const [normalizedName, matchingRows] of globalRowsByName) {
+    if (matchingRows.length < 2) {
+      continue;
+    }
+
+    const uniqueWithinEveryReport = reports.every(
+      (report) =>
+        (nameCountsByReport
+          .get(report)
+          ?.get(normalizedName) ?? 0) <= 1
+    );
+
+    if (!uniqueWithinEveryReport) {
+      continue;
+    }
+
+    const distinctCodes = new Set(
+      matchingRows
+        .map((row) =>
+          row.accountCode
+            ? cleanText(row.accountCode)
+                .toLocaleLowerCase()
+                .replace(/\s+/g, "")
+            : ""
+        )
+        .filter(Boolean)
+    );
+
+    if (distinctCodes.size > 1) {
+      safeNameBridge.add(normalizedName);
+    }
+  }
+
+  const reportEntries = new Map<
+    AnnualReport,
+    Array<{ mergeKey: string; row: AnnualRow }>
+  >();
+
+  for (const report of reports) {
+    const codeOccurrences = new Map<string, number>();
+
+    const entries = report.rows.map((row) => {
+      const normalizedName = normalizeName(row.name);
+      const normalizedCode = row.accountCode
+        ? cleanText(row.accountCode)
+            .toLocaleLowerCase()
+            .replace(/\s+/g, "")
+        : "";
+
+      if (safeNameBridge.has(normalizedName)) {
+        return {
+          mergeKey: `name:${normalizedName}`,
+          row,
+        };
       }
 
-      if (!order.includes(row.key)) {
-        order.push(row.key);
+      if (normalizedCode) {
+        const occurrence =
+          (codeOccurrences.get(normalizedCode) ?? 0) + 1;
+
+        codeOccurrences.set(normalizedCode, occurrence);
+
+        return {
+          mergeKey: `account:${normalizedCode}\u0000${occurrence}`,
+          row,
+        };
+      }
+
+      return {
+        mergeKey: `name-occurrence:${row.key}`,
+        row,
+      };
+    });
+
+    reportEntries.set(report, entries);
+  }
+
+  const order: string[] = [];
+  const names = new Map<string, string>();
+  const codesByKey = new Map<string, Set<string>>();
+  const displayCodeByKey = new Map<string, string>();
+
+  for (const report of reports) {
+    for (const { mergeKey, row } of
+      reportEntries.get(report) ?? []) {
+      if (!names.has(mergeKey)) {
+        names.set(mergeKey, row.name);
+      }
+
+      if (row.accountCode) {
+        const normalizedCode = cleanText(row.accountCode)
+          .toLocaleLowerCase()
+          .replace(/\s+/g, "");
+
+        const codes = codesByKey.get(mergeKey) ?? new Set<string>();
+        codes.add(normalizedCode);
+        codesByKey.set(mergeKey, codes);
+
+        if (!displayCodeByKey.has(mergeKey)) {
+          displayCodeByKey.set(mergeKey, row.accountCode);
+        }
+      }
+
+      if (!order.includes(mergeKey)) {
+        order.push(mergeKey);
       }
     }
   }
 
-  /*
-   * One lookup map per annual report.
-   */
-  const reportMaps =
-    new Map<
-      AnnualReport,
-      Map<string, AnnualRow>
-    >();
+  const reportMaps = new Map<
+    AnnualReport,
+    Map<string, AnnualRow>
+  >();
 
   for (const report of reports) {
     reportMaps.set(
       report,
       new Map(
-        report.rows.map(
-          (row) => [row.key, row]
+        (reportEntries.get(report) ?? []).map(
+          ({ mergeKey, row }) => [mergeKey, row]
         )
       )
     );
   }
 
-  const rows: AnnualRow[] =
-    order.map((key) => {
-      const values =
-        periods.map((period) => {
-          const row =
-            reportMaps
-              .get(period.report)
-              ?.get(key);
+  const finalOccurrenceCounts = new Map<string, number>();
 
-          return (
-            row?.values[
-              period.valueIndex
-            ] ?? null
-          );
-        });
+  const rows: AnnualRow[] = order.map((mergeKey) => {
+    const name = names.get(mergeKey) ?? "";
+    const normalizedName = normalizeName(name);
+    const occurrence =
+      (finalOccurrenceCounts.get(normalizedName) ?? 0) + 1;
 
-      return {
-        key,
-        name:
-          names.get(key) ?? "",
-        values,
-      };
+    finalOccurrenceCounts.set(normalizedName, occurrence);
+
+    const codes = codesByKey.get(mergeKey) ?? new Set<string>();
+    const accountCode =
+      codes.size === 1
+        ? displayCodeByKey.get(mergeKey) ?? null
+        : null;
+
+    const values = periods.map((period) => {
+      const row = reportMaps
+        .get(period.report)
+        ?.get(mergeKey);
+
+      return (
+        row?.values[period.valueIndex] ?? null
+      );
     });
+
+    return {
+      key: occurrenceKey(name, occurrence),
+      accountCode,
+      name,
+      values,
+    };
+  });
+
 
   return {
     file: reports[0].file,
@@ -1470,6 +1627,63 @@ async function readPdfAnnualizedReport(
 }
 
 
+function buildAnnualKeyRemap(
+  annual: AnnualReport,
+  t12: T12Report
+): Map<string, string> {
+  /*
+   * Annual statements can omit account codes and may omit
+   * unvalued section-heading rows that are present in the T12.
+   * If that creates duplicate same-name T12 occurrences, align a
+   * single valued annual row to the single valued T12 occurrence
+   * instead of blindly using occurrence #1.
+   */
+  const annualKeyRemap = new Map<string, string>();
+  const annualRowsByName = new Map<string, AnnualRow[]>();
+  const t12RowsByName = new Map<string, T12Row[]>();
+
+  for (const row of annual.rows) {
+    const normalized = normalizeName(row.name);
+    const existing = annualRowsByName.get(normalized) ?? [];
+    existing.push(row);
+    annualRowsByName.set(normalized, existing);
+  }
+
+  for (const row of t12.rows) {
+    const normalized = normalizeName(row.name);
+    const existing = t12RowsByName.get(normalized) ?? [];
+    existing.push(row);
+    t12RowsByName.set(normalized, existing);
+  }
+
+  for (const [normalizedName, annualMatches] of annualRowsByName) {
+    const t12Matches = t12RowsByName.get(normalizedName) ?? [];
+
+    if (annualMatches.length !== 1 || t12Matches.length <= 1) {
+      continue;
+    }
+
+    const annualRow = annualMatches[0];
+
+    if (!annualRow.values.some((value) => value !== null)) {
+      continue;
+    }
+
+    const valuedT12Matches = t12Matches.filter(
+      (row) => row.total !== null
+    );
+
+    if (valuedT12Matches.length === 1) {
+      annualKeyRemap.set(
+        annualRow.key,
+        valuedT12Matches[0].key
+      );
+    }
+  }
+
+  return annualKeyRemap;
+}
+
 function mergeReports(
   annual: AnnualReport | null,
   t12: T12Report | null
@@ -1490,7 +1704,7 @@ function mergeReports(
 
   if (annual && !t12) {
     return annual.rows.map((row) => ({
-      accountCode: null,
+      accountCode: row.accountCode,
       name: row.name,
       values: [...row.values],
     }));
@@ -1500,15 +1714,22 @@ function mergeReports(
     throw new Error("Could not merge the supplied reports.");
   }
 
+  const annualKeyRemap = buildAnnualKeyRemap(annual, t12);
+
   const annualByKey = new Map(
-    annual.rows.map((row) => [row.key, row])
+    annual.rows.map((row) => [
+      annualKeyRemap.get(row.key) ?? row.key,
+      row,
+    ])
   );
 
   const t12ByKey = new Map(
     t12.rows.map((row) => [row.key, row])
   );
 
-  const annualOrder = annual.rows.map((row) => row.key);
+  const annualOrder = annual.rows.map(
+    (row) => annualKeyRemap.get(row.key) ?? row.key
+  );
   const t12Order = t12.rows.map((row) => row.key);
 
   const combinedOrder = [...annualOrder];
@@ -1548,7 +1769,10 @@ function mergeReports(
     const t12Row = t12ByKey.get(key);
 
     return {
-      accountCode: t12Row?.accountCode ?? null,
+      accountCode:
+        t12Row?.accountCode ??
+        annualRow?.accountCode ??
+        null,
       name: annualRow?.name ?? t12Row?.name ?? "",
       values: [
         ...(annualRow?.values ??
@@ -1566,9 +1790,16 @@ function validateOutput(
 ): void {
   const expectedKeys = new Set<string>();
 
+  const annualKeyRemap =
+    annual && t12
+      ? buildAnnualKeyRemap(annual, t12)
+      : new Map<string, string>();
+
   if (annual) {
     for (const row of annual.rows) {
-      expectedKeys.add(row.key);
+      expectedKeys.add(
+        annualKeyRemap.get(row.key) ?? row.key
+      );
     }
   }
 
@@ -1905,6 +2136,69 @@ async function loadInternalNumberMapping(): Promise<InternalNumberMapping> {
   };
 }
 
+const INTERNAL_NUMBER_REFERENCE_ALIASES = new Map<string, string>([
+  ["5345-00\u0000legal fees", "Collection Agency/Attorney"],
+  ["5377-00\u0000pest control", "Pest Control Fee"],
+  ["5379-00\u0000work order charge", "Miscellaneous Income"],
+  ["6140-00\u0000legal fees", "Legal & Professional Services"],
+  ["6208-00\u0000leasing staff", "Leasing Salaries"],
+  ["6259-00\u0000referral fees", "Locator Fees"],
+  ["6262-00\u0000creative production", "Marketing Collateral"],
+  ["6350-00\u0000cable/satellite", "Bulk Cable"],
+  ["6364-00\u0000landscaping/irrigation", "Lawn Irrigation Repairs"],
+  ["6372-00\u0000pest control", "Exterminating"],
+  ["6385-00\u0000hvac/chiller", "HVAC Contract"],
+  ["6423-00\u0000roof repair/maint", "Roofing Repairs"],
+  ["6515-00\u0000window coverings parts/accessories", "Blinds"],
+  ["6713-00\u0000personal property taxes", "Misc Taxes"],
+  ["5216-00\u0000less renewal concessions", "Renewal Concessions"],
+  ["5378-00\u0000unit transfer fee", "Transfer Fees"],
+  ["42050-000\u0000lease cancellation fee", "Cancellation Fees"],
+  ["43030-000\u0000cable provider payments", "Cable TV Income"],
+  ["51360-000\u0000entertainment expense", "Entertainment"],
+  ["51430-000\u0000force placed coverage expense", "Forced Place Coverage Expense"],
+  ["51620-000\u0000bulk cable expense", "Bulk Cable"],
+  ["52625-000\u0000carpet/flooring repair", "Carpet Floor Repair"],
+]);
+
+function internalNumberAliasKey(
+  accountCode: string | null,
+  lineItem: string
+): string | null {
+  if (!accountCode) {
+    return null;
+  }
+
+  return `${accountCode.trim()}\u0000${normalizeName(lineItem)}`;
+}
+
+function findInternalNumberForRow(
+  row: Pick<MergedRow, "accountCode" | "name">,
+  mapping: InternalNumberMapping
+): string | number | null {
+  const aliasKey = internalNumberAliasKey(
+    row.accountCode,
+    row.name
+  );
+
+  if (aliasKey) {
+    const referenceName =
+      INTERNAL_NUMBER_REFERENCE_ALIASES.get(aliasKey);
+
+    if (referenceName) {
+      const mapped = mapping.exact.get(
+        normalizeMappingName(referenceName)
+      );
+
+      if (mapped !== undefined) {
+        return mapped;
+      }
+    }
+  }
+
+  return findInternalNumber(row.name, mapping);
+}
+
 function findInternalNumber(
   lineItem: unknown,
   mapping: InternalNumberMapping
@@ -2192,12 +2486,53 @@ const headers = [
 
   worksheet.addRow(headers);
 
-  const budgetOccurrence = new Map<string, number>();
-  const budgetByKey = new Map<string, T12Row>();
+  /*
+   * Budget matching is intentionally conservative.
+   *
+   * The Combined I&E must not lose a valid Budget value merely because the
+   * Budget uses different wording than Annual/T12. We only merge a Budget row
+   * into an existing base row when the identity is unambiguous. Every other
+   * Budget row is preserved later as its own Budget-only row.
+   *
+   * This also prevents duplicate code-less labels from different sections
+   * (for example Landscaping/Irrigation in Major Expenses vs Capital
+   * Expenditures) from being attached to the wrong operating row.
+   */
+  const baseNameCounts = new Map<string, number>();
+  const budgetRowsByName = new Map<string, T12Row[]>();
+  const budgetRowsByAccountAndName = new Map<string, T12Row[]>();
+  const usedBudgetRows = new Set<T12Row>();
+
+  for (const row of rows) {
+    if (row.accountCode) {
+      continue;
+    }
+
+    const normalized = normalizeName(row.name);
+    baseNameCounts.set(
+      normalized,
+      (baseNameCounts.get(normalized) ?? 0) + 1
+    );
+  }
 
   if (budget) {
     for (const row of budget.rows) {
-      budgetByKey.set(row.key, row);
+      const normalized = normalizeName(row.name);
+      const byName = budgetRowsByName.get(normalized) ?? [];
+      byName.push(row);
+      budgetRowsByName.set(normalized, byName);
+
+      if (row.accountCode) {
+        const accountAndName =
+          `${row.accountCode.trim()}\u0000${normalized}`;
+        const byAccountAndName =
+          budgetRowsByAccountAndName.get(accountAndName) ?? [];
+        byAccountAndName.push(row);
+        budgetRowsByAccountAndName.set(
+          accountAndName,
+          byAccountAndName
+        );
+      }
     }
   }
 
@@ -2212,22 +2547,43 @@ const headers = [
 
     const internalNumber = summary
       ? null
-      : findInternalNumber(row.name, mapping);
+      : findInternalNumberForRow(row, mapping);
 
     let budgetValue: number | null = null;
 
     if (budget) {
-      const normalized = normalizeName(row.name);
-      const occurrence =
-        (budgetOccurrence.get(normalized) ?? 0) + 1;
+      let budgetRow: T12Row | undefined;
 
-      budgetOccurrence.set(normalized, occurrence);
+      if (row.accountCode) {
+        const candidates =
+          budgetRowsByAccountAndName.get(
+            `${row.accountCode.trim()}\u0000${normalizeName(row.name)}`
+          ) ?? [];
 
-      const budgetRow = budgetByKey.get(
-        occurrenceKey(row.name, occurrence)
-      );
+        budgetRow = candidates.find(
+          (candidate) => !usedBudgetRows.has(candidate)
+        );
+      } else {
+        const normalized = normalizeName(row.name);
+        const candidates = budgetRowsByName.get(normalized) ?? [];
+
+        /*
+         * For code-less rows, exact name matching is allowed only when that
+         * name occurs exactly once in BOTH the base universe and the Budget.
+         * Otherwise the relationship is ambiguous, so preserve the Budget
+         * row separately instead of guessing by occurrence or section.
+         */
+        if (
+          (baseNameCounts.get(normalized) ?? 0) === 1 &&
+          candidates.length === 1 &&
+          !usedBudgetRows.has(candidates[0])
+        ) {
+          budgetRow = candidates[0];
+        }
+      }
 
       if (budgetRow) {
+        usedBudgetRows.add(budgetRow);
         budgetValue = budgetRow.total;
       }
     }
@@ -2294,6 +2650,83 @@ outputValues.push(signFlipNote);
           argb: "FFFFF2CC",
         },
       };
+    }
+  }
+
+  /*
+   * Preserve every Budget row that could not be matched unambiguously to an
+   * Annual/T12 base row. The Annual/T12 columns stay blank and the Budget
+   * value is written in the Budget column. This makes the conversion
+   * lossless without forcing semantic naming decisions into the parser.
+   */
+  if (budget) {
+    for (const budgetRow of budget.rows) {
+      if (usedBudgetRows.has(budgetRow)) {
+        continue;
+      }
+
+      const summary = isSummaryLine(budgetRow.name);
+      const signFlipNote = getSignFlipNote(budgetRow.name);
+      const shouldFlipSign = signFlipNote !== null;
+      const internalNumber = summary
+        ? null
+        : findInternalNumberForRow(
+            {
+              accountCode: budgetRow.accountCode,
+              name: budgetRow.name,
+            },
+            mapping
+          );
+
+      const outputValues: Array<string | number | null> = [
+        budgetRow.accountCode,
+        internalNumber,
+        budgetRow.name,
+        ...new Array(years.length).fill(null),
+      ];
+
+      if (t12) {
+        outputValues.push(null);
+      }
+
+      outputValues.push(
+        flipSignIfNeeded(budgetRow.total, shouldFlipSign)
+      );
+
+      if (annualized) {
+        outputValues.push(null);
+      }
+
+      outputValues.push(signFlipNote);
+
+      const writtenRow = worksheet.addRow(outputValues);
+
+      if (summary) {
+        for (
+          let columnNumber = 1;
+          columnNumber <= headers.length;
+          columnNumber += 1
+        ) {
+          writtenRow.getCell(columnNumber).font = {
+            ...writtenRow.getCell(columnNumber).font,
+            bold: true,
+          };
+        }
+
+        worksheet.addRow(
+          new Array(headers.length).fill(null)
+        );
+      } else if (internalNumber === null) {
+        unmatchedCount += 1;
+
+        writtenRow.getCell(2).fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: {
+            argb: "FFFFF2CC",
+          },
+        };
+      }
     }
   }
 
@@ -2380,6 +2813,29 @@ worksheet.getColumn(headers.length).width = 30;
   };
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message.trim()
+    : fallback;
+}
+
+function addFileWarning(
+  file: IEInputFile,
+  reason: string,
+  warnings: string[]
+): void {
+  warnings.push(`${file.name}: ${reason}`);
+}
+
+function markFileIncluded(
+  file: IEInputFile,
+  includedFileNames: string[]
+): void {
+  if (!includedFileNames.includes(file.name)) {
+    includedFileNames.push(file.name);
+  }
+}
+
 async function buildPropertyGroup(
   files: IEInputFile[]
 ): Promise<{
@@ -2391,8 +2847,10 @@ async function buildPropertyGroup(
 
   for (const file of files) {
     if (file.name.startsWith("~$")) {
-      warnings.push(
-        `Temporary Excel file skipped: ${file.name}`
+      addFileWarning(
+        file,
+        "temporary Excel files are not processed.",
+        warnings
       );
       continue;
     }
@@ -2404,8 +2862,10 @@ async function buildPropertyGroup(
   !lowerName.endsWith(".xlsm") &&
   !lowerName.endsWith(".pdf")
 ) {
-      warnings.push(
-        `Unsupported file skipped: ${file.name}`
+      addFileWarning(
+        file,
+        "this file type is not supported.",
+        warnings
       );
       continue;
     }
@@ -2420,18 +2880,21 @@ try {
     error
   );
 
-  const message =
-    error instanceof Error
-      ? error.message
-      : "The workbook could not be read.";
-
-  throw new Error(`${file.name}: ${message}`);
+  addFileWarning(
+    file,
+    errorMessage(error, "The workbook could not be read."),
+    warnings
+  );
+  continue;
 }
 
     if (!info) {
-      throw new Error(
-        `${file.name} is not a recognized Annual Statement, T12, or Budget workbook.`
+      addFileWarning(
+        file,
+        "this is not a recognized Annual Statement, T12, Budget, or Annualized report.",
+        warnings
       );
+      continue;
     }
 
     let group = groups.get(info.propertyKey);
@@ -2578,63 +3041,127 @@ export async function processIE(
   const { group, warnings } =
     await buildPropertyGroup(files);
 
+  const includedFileNames: string[] = [];
+
   const mapping = await loadInternalNumberMapping();
 
 let annual: AnnualReport | null = null;
 
 if (group.separateAnnualFiles.length > 0) {
-  annual = await combineSeparateAnnuals(
-    group.separateAnnualFiles
-  );
+  const usableSeparateAnnualFiles: IEInputFile[] = [];
+
+  for (const file of group.separateAnnualFiles) {
+    try {
+      const { worksheet } = await loadWorkbook(file.buffer);
+      const firstCells = getFirstCellsText(worksheet);
+      const text = firstCells.join(" | ");
+
+      const report = text.includes("statement of operations")
+        ? await readStatementOfOperationsAnnual(file)
+        : await readOSStatement(file, "annual");
+
+      const year = Number.parseInt(report.label, 10);
+      if (!Number.isFinite(year)) {
+        throw new Error("could not determine the annual year.");
+      }
+
+      usableSeparateAnnualFiles.push(file);
+      markFileIncluded(file, includedFileNames);
+    } catch (error) {
+      addFileWarning(
+        file,
+        errorMessage(error, "The annual statement could not be read."),
+        warnings
+      );
+    }
+  }
+
+  if (usableSeparateAnnualFiles.length > 0) {
+    annual = await combineSeparateAnnuals(usableSeparateAnnualFiles);
+  }
 } else if (group.annualFiles.length > 0) {
-  annual = await combineAnnualReports(
-    group.annualFiles
-  );
+  const usableAnnualFiles: IEInputFile[] = [];
+
+  for (const file of group.annualFiles) {
+    try {
+      if (file.name.toLowerCase().endsWith(".pdf")) {
+        await readPdfAnnualReport(file);
+      } else {
+        await readAnnualReport(file);
+      }
+
+      usableAnnualFiles.push(file);
+      markFileIncluded(file, includedFileNames);
+    } catch (error) {
+      addFileWarning(
+        file,
+        errorMessage(error, "The Annual Statement could not be read."),
+        warnings
+      );
+    }
+  }
+
+  if (usableAnnualFiles.length > 0) {
+    annual = await combineAnnualReports(usableAnnualFiles);
+  }
 }
   let t12: T12Report | null = null;
 
 if (group.t12Files.length === 1) {
   const t12File = group.t12Files[0];
 
-  if (
-    t12File.name
-      .toLowerCase()
-      .endsWith(".pdf")
-  ) {
-    t12 = await readPdfT12Report(t12File);
-  } else {
-    const info = await inspectFile(t12File);
+  try {
+    if (
+      t12File.name
+        .toLowerCase()
+        .endsWith(".pdf")
+    ) {
+      t12 = await readPdfT12Report(t12File);
+    } else {
+      const info = await inspectFile(t12File);
 
-    if (!info) {
-      throw new Error(
-        `${t12File.name} could not be identified.`
-      );
-    }
-
-    if (info.reportType === "t12") {
-      const { worksheet } =
-        await loadWorkbook(t12File.buffer);
-
-      const row4A = cleanText(
-        rawCellValue(worksheet.getCell("A4"))
-      ).toLocaleLowerCase();
-
-      if (row4A === "statement (12 months)") {
-        const report = await readOSStatement(
-          t12File,
-          "t12"
+      if (!info) {
+        throw new Error(
+          `${t12File.name} could not be identified.`
         );
+      }
 
-        t12 = {
-          file: t12File,
-          propertyName: report.propertyName,
-          label: report.label,
-          rows: report.rows,
-        };
-      } else {
-        t12 = await readT12Report(t12File);
+      if (info.reportType === "t12") {
+        const { worksheet } =
+          await loadWorkbook(t12File.buffer);
+
+        const row4A = cleanText(
+          rawCellValue(worksheet.getCell("A4"))
+        ).toLocaleLowerCase();
+
+        if (row4A === "statement (12 months)") {
+          const report = await readOSStatement(
+            t12File,
+            "t12"
+          );
+
+          t12 = {
+            file: t12File,
+            propertyName: report.propertyName,
+            label: report.label,
+            rows: report.rows,
+          };
+        } else {
+          t12 = await readT12Report(t12File);
+        }
       }
     }
+
+    if (t12) {
+      markFileIncluded(t12File, includedFileNames);
+    }
+  } catch (error) {
+    addFileWarning(
+      t12File,
+      errorMessage(error, "The T12 could not be read."),
+      warnings
+    );
+    t12 = null;
   }
 }
 
@@ -2643,11 +3170,24 @@ if (group.t12Files.length === 1) {
 if (group.budgetFiles.length === 1) {
   const budgetFile = group.budgetFiles[0];
 
-  budget = budgetFile.name
-    .toLowerCase()
-    .endsWith(".pdf")
-    ? await readPdfBudgetReport(budgetFile)
-    : await readBudgetReport(budgetFile);
+  try {
+    budget = budgetFile.name
+      .toLowerCase()
+      .endsWith(".pdf")
+      ? await readPdfBudgetReport(budgetFile)
+      : await readBudgetReport(budgetFile);
+
+    if (budget) {
+      markFileIncluded(budgetFile, includedFileNames);
+    }
+  } catch (error) {
+    addFileWarning(
+      budgetFile,
+      errorMessage(error, "The Budget could not be read."),
+      warnings
+    );
+    budget = null;
+  }
 }
 
 let annualized: AnnualizedReport | null = null;
@@ -2655,9 +3195,22 @@ let annualized: AnnualizedReport | null = null;
 if (group.annualizedFiles.length === 1) {
   const annualizedFile = group.annualizedFiles[0];
 
-  annualized = await readPdfAnnualizedReport(
-    annualizedFile
-  );
+  try {
+    annualized = await readPdfAnnualizedReport(
+      annualizedFile
+    );
+
+    if (annualized) {
+      markFileIncluded(annualizedFile, includedFileNames);
+    }
+  } catch (error) {
+    addFileWarning(
+      annualizedFile,
+      errorMessage(error, "The Annualized report could not be read."),
+      warnings
+    );
+    annualized = null;
+  }
 }
 
 if (annualized) {
@@ -2716,7 +3269,7 @@ if (annualized) {
    */
   if (!annual && !t12) {
     throw new Error(
-      "At least one Annual Statement or T12 report is required. A Budget cannot be processed by itself."
+      "At least one Annual Statement or T12 report must be successfully processed. A Budget cannot be processed by itself."
     );
   }
 
@@ -2736,15 +3289,34 @@ if (annualized) {
     mapping
   );
 
+  const includedNameSet = new Set(includedFileNames);
+  const skippedFileNames = Array.from(
+    new Set(
+      files
+        .filter((file) => !includedNameSet.has(file.name))
+        .map((file) => file.name)
+    )
+  );
+
+  if (skippedFileNames.length > 0) {
+    warnings.unshift(
+      `Keystone did not process ${skippedFileNames.length} file${
+        skippedFileNames.length === 1 ? "" : "s"
+      }: ${skippedFileNames.join(", ")}. The workbook was created using the remaining ${includedFileNames.length} file${
+        includedFileNames.length === 1 ? "" : "s"
+      }.`
+    );
+  }
+
   if (!annual && t12) {
     warnings.push(
-      `${group.displayName}: no Annual Statement was provided. A T12-only output was created.`
+      `${group.displayName}: no usable Annual Statement was included. A T12-only output was created.`
     );
   }
 
   if (annual && !t12) {
     warnings.push(
-      `${group.displayName}: no T12 was provided. An Annual-only output was created.`
+      `${group.displayName}: no usable T12 was included. An Annual-only output was created.`
     );
   }
 
@@ -2764,5 +3336,7 @@ if (annualized) {
     propertyName: group.displayName,
     rowCount: rows.length,
     warnings,
+    includedFileNames,
+    skippedFileNames,
   };
 }

@@ -128,6 +128,12 @@ export async function POST(request: Request) {
     const encodedWarnings = encodeURIComponent(
       JSON.stringify(result.warnings)
     );
+    const encodedIncludedFiles = encodeURIComponent(
+      JSON.stringify(result.includedFileNames)
+    );
+    const encodedSkippedFiles = encodeURIComponent(
+      JSON.stringify(result.skippedFileNames)
+    );
 
     return new Response(new Uint8Array(result.buffer), {
       status: 200,
@@ -138,6 +144,8 @@ export async function POST(request: Request) {
         "X-IE-Property": encodeURIComponent(result.propertyName),
         "X-IE-Row-Count": String(result.rowCount),
         "X-IE-Warnings": encodedWarnings,
+        "X-IE-Included-Files": encodedIncludedFiles,
+        "X-IE-Skipped-Files": encodedSkippedFiles,
         "Cache-Control": "no-store",
       },
     });
