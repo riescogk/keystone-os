@@ -15,7 +15,6 @@ export default function RentRollAutomationPage() {
         >
           ← I&amp;E / Rent Roll Automation
         </Link>
-
         <h1 className="mt-4 text-lg font-semibold text-slate-900">
           Rent Roll Automation
         </h1>
@@ -25,7 +24,6 @@ export default function RentRollAutomationPage() {
           roll with unit categories and a summary worksheet.
         </p>
       </div>
-
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <section className="rounded-lg border border-slate-200 bg-white p-6">
           <h2 className="text-base font-semibold text-slate-900">
@@ -39,71 +37,51 @@ export default function RentRollAutomationPage() {
 
           <RentRollForm />
         </section>
-
         <aside className="rounded-lg border border-slate-200 bg-slate-50 p-6">
           <h2 className="text-sm font-semibold text-slate-900">
-            Source File Requirements
+            What you can upload
           </h2>
 
-          <p className="mt-2 text-sm leading-6 text-slate-600">
-            The uploaded rent roll must follow the source layout expected by
-            the automation.
-          </p>
+          <div className="mt-4 space-y-4 text-sm leading-6 text-slate-600">
+            <div>
+              <p className="font-medium text-slate-900">Accepted files</p>
+              <p>PDF or Excel (.xlsx), up to 20 MB.</p>
+            </div>
 
-          <ul className="mt-4 space-y-3 text-sm leading-5 text-slate-700">
-            <li>
-              <strong>File:</strong> Excel .xlsx workbook.
-            </li>
+            <div>
+              <p className="font-medium text-slate-900">Rent data</p>
+              <p>
+                Include unit-level rent roll information such as unit, rent
+                amount, and occupancy or resident information.
+              </p>
+            </div>
 
-            <li>
-              <strong>Resident section:</strong> Must contain a
-              &quot;Current/Notice/Vacant Residents&quot; marker before the
-              unit data.
-            </li>
+            <div>
+              <p className="font-medium text-slate-900">Excel files</p>
+              <p>
+                Keystone supports the standard Rent Roll layouts currently
+                configured in the system. Charge-code based files should
+                include the applicable rent charge codes.
+              </p>
+            </div>
 
-            <li>
-              <strong>Column A:</strong> Unit.
-            </li>
-
-            <li>
-              <strong>Column B:</strong> Unit Type.
-            </li>
-
-            <li>
-              <strong>Column C:</strong> Sq Ft.
-            </li>
-
-            <li>
-              <strong>Column E:</strong> Resident Name.
-            </li>
-
-            <li>
-              <strong>Column F:</strong> Market Rent.
-            </li>
-
-            <li>
-              <strong>Column G:</strong> Charge Code.
-            </li>
-
-            <li>
-              <strong>Column H:</strong> Charge Amount.
-            </li>
-
-            <li>
-              <strong>Charge code:</strong> At least one supplied rent charge
-              code must match the property&apos;s rent charge rows.
-            </li>
-          </ul>
+            <div>
+              <p className="font-medium text-slate-900">PDF files</p>
+              <p>
+                Text-based rent roll PDFs are supported. Scanned or image-only
+                PDFs may need to be converted to Excel before processing.
+              </p>
+            </div>
+          </div>
 
           <div className="mt-5 border-t border-slate-200 pt-5">
             <h3 className="text-sm font-semibold text-slate-900">
-              Recommended
+              For best results
             </h3>
-
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              Unit Type and Sq Ft should be populated for reliable unit
-              category grouping. Resident names containing VACANT or MODEL are
-              used to classify vacancy and model units in the summary.
+              Include Unit Type and Sq Ft when available. Resident names
+              containing VACANT or MODEL may be used to classify vacancy and
+              model units in the summary.
             </p>
           </div>
         </aside>

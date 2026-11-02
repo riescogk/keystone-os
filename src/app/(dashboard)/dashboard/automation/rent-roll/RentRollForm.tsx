@@ -14,7 +14,6 @@ function failedVerification(message: string): AutomationAIVerificationResult {
     message,
   };
 }
-
 export default function RentRollForm() {
   const [file, setFile] = useState<File | null>(null);
   const [chargeCodes, setChargeCodes] = useState("rent, erent, subrent");
@@ -27,7 +26,6 @@ export default function RentRollForm() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
-
   async function runVerification(
     sourceFile: File,
     workbookBlob: Blob,
@@ -35,7 +33,6 @@ export default function RentRollForm() {
   ) {
     setVerifying(true);
     setVerification({ status: "processing" });
-
     try {
       const formData = new FormData();
       formData.append("sourceFile", sourceFile);
@@ -51,7 +48,6 @@ export default function RentRollForm() {
         method: "POST",
         body: formData,
       });
-
       if (!response.ok) {
         let message = "AI verification could not be completed.";
 
@@ -67,7 +63,6 @@ export default function RentRollForm() {
         setVerification(failedVerification(message));
         return;
       }
-
       const result = (await response.json()) as AutomationAIVerificationResult;
       setVerification(result);
     } catch (caughtError) {
@@ -85,7 +80,6 @@ export default function RentRollForm() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
     setError("");
     setSuccess("");
     setWarnings([]);
@@ -108,7 +102,6 @@ export default function RentRollForm() {
 
       formData.append("file", file);
       formData.append("chargeCodes", chargeCodes);
-
       const response = await fetch("/api/automation/rent-roll", {
         method: "POST",
         body: formData,
@@ -131,7 +124,6 @@ export default function RentRollForm() {
 
         throw new Error(message);
       }
-
       const blob = await response.blob();
 
       const disposition = response.headers.get("Content-Disposition") ?? "";
@@ -145,7 +137,6 @@ export default function RentRollForm() {
       if (warningHeader) {
         try {
           const parsed = JSON.parse(decodeURIComponent(warningHeader)) as string[];
-
           setWarnings(parsed);
         } catch {
           // A malformed warning header should not block the download.
@@ -165,7 +156,6 @@ export default function RentRollForm() {
       anchor.remove();
 
       URL.revokeObjectURL(url);
-
       setSuccess(
         unitCount
           ? `Rent Roll processed successfully. ${unitCount} units were found and the clean workbook was downloaded.`
@@ -174,7 +164,6 @@ export default function RentRollForm() {
 
       // Deterministic Keystone processing is complete before optional AI begins.
       setProcessing(false);
-
       if (runAIVerification) {
         await runVerification(file, blob, filename);
       } else {
@@ -190,7 +179,6 @@ export default function RentRollForm() {
       setProcessing(false);
     }
   }
-
   return (
     <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-6">
       <div>
@@ -200,7 +188,6 @@ export default function RentRollForm() {
         >
           Rent Roll File
         </label>
-
         <input
           id="rent-roll-file"
           name="file"
@@ -216,7 +203,6 @@ export default function RentRollForm() {
           }}
           className="mt-2 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 file:mr-4 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
         />
-
         <p className="mt-2 text-xs text-slate-500">
           PDF or Excel .xlsx files. Maximum file size: 20 MB.
         </p>
@@ -229,7 +215,6 @@ export default function RentRollForm() {
         >
           Rent Charge Code
         </label>
-
         <input
           id="charge-code"
           name="chargeCodes"
@@ -240,12 +225,11 @@ export default function RentRollForm() {
           placeholder="rent, erent, subrent"
           className="mt-2 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500 disabled:cursor-not-allowed disabled:opacity-60"
         />
-
         <p className="mt-2 text-xs leading-5 text-slate-500">
-          Separate multiple charge codes with commas. Spaces and capitalization do not matter.
+          Used when the source identifies rent through charge codes. Separate
+          multiple codes with commas; spaces and capitalization do not matter.
         </p>
       </div>
-
       <label className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
         <input
           type="checkbox"
@@ -266,7 +250,6 @@ export default function RentRollForm() {
           </span>
         </span>
       </label>
-
       {error && (
         <div
           role="alert"
@@ -283,13 +266,11 @@ export default function RentRollForm() {
       )}
 
       <AIVerificationPanel state={verification} />
-
       {warnings.length > 0 && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
           <p className="text-sm font-medium text-amber-800">
             Processed with {warnings.length} warning{warnings.length === 1 ? "" : "s"}
           </p>
-
           <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-700">
             {warnings.map((warning, index) => (
               <li key={`${warning}-${index}`}>{warning}</li>
@@ -297,7 +278,6 @@ export default function RentRollForm() {
           </ul>
         </div>
       )}
-
       <button
         type="submit"
         disabled={processing || verifying}
