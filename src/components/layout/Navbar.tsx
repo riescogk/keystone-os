@@ -19,21 +19,28 @@ export function Navbar({ userEmail }: NavbarProps) {
           Keystone OS
         </Link>
 
-        <nav className="flex items-center gap-6" aria-label="Primary">
-          <Link
-            href="/dashboard/automation"
-            className="text-sm font-medium text-slate-600 hover:text-slate-900"
-          >
-            I&E / Rent Roll
-          </Link>
+<nav className="flex items-center gap-6" aria-label="Primary">
+  <Link
+    href="/dashboard/automation"
+    className="text-sm font-medium text-slate-600 hover:text-slate-900"
+  >
+    I&E / Rent Roll
+  </Link>
 
-          <Link
-            href="/dashboard/settings"
-            className="text-sm font-medium text-slate-600 hover:text-slate-900"
-          >
-            Account Settings
-          </Link>
-        </nav>
+  <Link
+    href="/dashboard/automation/table-verification"
+    className="text-sm font-medium text-slate-600 hover:text-slate-900"
+  >
+    Table Verification
+  </Link>
+
+  <Link
+    href="/dashboard/settings"
+    className="text-sm font-medium text-slate-600 hover:text-slate-900"
+  >
+    Account Settings
+  </Link>
+</nav>
 
         <div className="flex items-center gap-4">
           {userEmail && (

@@ -1,3 +1,4 @@
+
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
@@ -9,6 +10,11 @@ const nextConfig: NextConfig = {
       // when a file is too large.
       bodySizeLimit: "26mb",
     },
+
+    // Allow larger uploads for Table Verification in local development.
+    // Keep the default 10 MB proxy limit outside development.
+    proxyClientMaxBodySize:
+      process.env.NODE_ENV === "development" ? "210mb" : "10mb",
   },
 };
 
