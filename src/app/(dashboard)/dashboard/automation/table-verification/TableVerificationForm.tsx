@@ -1,382 +1,250 @@
-
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 
-type JobStatus = {
-  state: string;
-  message?: string;
-  error?: string;
-  summary?: Record<string, unknown>;
+type Summary = {
+  tables_identified?: number;
+  matching_tables?: number;
+  tables_with_discrepancies?: number;
+  unverified?: number;
+  partial?: number;
+  discrepancies?: number;
+  discrepancy_occurrences?: number;
 };
-
-
-type VerificationTable = {
+type TableResult = {
   id: string;
   title: string;
   status: string;
   mismatches: number;
 };
+type Status = {
+  state: "running" | "done" | "error";
+  message?: string;
+  summary?: Summary;
+};
+type Session =
+  | { mode: "local" }
+  | { mode: "hosted"; backend: string; ticket: string; expiresAt: number };
 
+type DownloadFormat = "html" | "json" | "csv" | "tables.csv" | "cells.csv";
+
+async function readJson<T>(response: Response): Promise<T> {
+  const payload: unknown = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = typeof payload === "object" && payload !== null && "error" in payload
+      ? String((payload as { error?: unknown }).error) : `Request failed (${response.status}).`;
+    throw new Error(error);
+  }
+  return payload as T;
+}
+
+function endpoint(session: Session, action: "run" | "status" | "download", job?: string, format?: DownloadFormat) {
+  if (session.mode === "hosted") {
+    const base = `${session.backend}/api/table-verification`;
+    if (action === "run") return `${base}/run`;
+    if (action === "status") return `${base}/status?job=${encodeURIComponent(job ?? "")}`;
+    return `${base}/download/${encodeURIComponent(job ?? "")}.${format ?? "html"}`;
+  }
+  const base = "/api/automation/table-verification";
+  if (action === "run") return base;
+  if (action === "status") return `${base}?action=status&job=${encodeURIComponent(job ?? "")}`;
+  return `${base}?action=download&job=${encodeURIComponent(job ?? "")}&format=${format ?? "html"}`;
+}
+
+function authHeaders(session: Session): HeadersInit {
+  return session.mode === "hosted" ? { Authorization: `Bearer ${session.ticket}` } : {};
+}
 
 export default function TableVerificationForm() {
   const [word, setWord] = useState<File | null>(null);
   const [excel, setExcel] = useState<File | null>(null);
-  const [jobId, setJobId] = useState("");
-  const [status, setStatus] = useState<JobStatus | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [status, setStatus] = useState<Status | null>(null);
+  const [tables, setTables] = useState<TableResult[] | null>(null);
+  const current = useRef<{ session: Session; job: string } | null>(null);
+  const cancelled = useRef(false);
+  const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-const [reportTables, setReportTables] = useState<VerificationTable[] | null>(null);
+  useEffect(() => () => {
+    cancelled.current = true;
+    if (timeout.current) clearTimeout(timeout.current);
+  }, []);
 
-
-  useEffect(() => {
-    if (!jobId) return;
-
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function checkStatus() {
-      try {
-        const response = await fetch(
-          `/api/automation/table-verification?action=status&job=${jobId}`,
-          { cache: "no-store" }
-        );
-
-        const result = (await response.json()) as JobStatus;
-
-        if (!response.ok) {
-          throw new Error(result.error || "Unable to check job status.");
-        }
-
-        if (!active) return;
-
-        setStatus(result);
-
-
-if (result.state === "done") {
-  const reportResponse = await fetch(
-    `/api/automation/table-verification?action=download&job=${jobId}&format=json`,
-    { cache: "no-store" }
-  );
-
-  if (!reportResponse.ok) {
-    throw new Error("Unable to load table-level results.");
-  }
-
-  const report = (await reportResponse.json()) as {
-    tables?: VerificationTable[];
-  };
-
-  if (!Array.isArray(report.tables)) {
-    throw new Error("The verification report contains no table results.");
-  }
-
-  if (active) {
-    setReportTables(report.tables);
-  }
-}
-
-
-        if (result.state === "running" || result.state === "queued") {
-          timer = setTimeout(checkStatus, 2000);
-        } else if (result.state === "error") {
-          setError(result.message || "Verification failed.");
-        }
-      } catch (err) {
-        if (active) {
-          setError(
-            err instanceof Error ? err.message : "Status check failed."
-          );
-        }
-      }
-    }
-
-    void checkStatus();
-
-    return () => {
-      active = false;
-      if (timer) clearTimeout(timer);
-    };
-  }, [jobId]);
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!word || !excel) return;
-
-    setError("");
-    setStatus(null);
-    setReportTables(null);
-    setJobId("");
-    setSubmitting(true);
-
+  async function fetchReport(session: Session, job: string) {
     try {
-      const formData = new FormData();
-      formData.append("word", word);
-      formData.append("excel", excel);
-
-      const response = await fetch("/api/automation/table-verification", {
-        method: "POST",
-        body: formData,
+      const response = await fetch(endpoint(session, "download", job, "json"), {
+        headers: authHeaders(session), cache: "no-store",
       });
-
-      const result = (await response.json()) as {
-        job?: string;
-        error?: string;
-      };
-
-      if (!response.ok || !result.job) {
-        throw new Error(result.error || "Unable to start verification.");
-      }
-
-      setJobId(result.job);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Upload failed."
-      );
-    } finally {
-      setSubmitting(false);
+      const report = await readJson<{ tables?: TableResult[] }>(response);
+      if (!cancelled.current) setTables(Array.isArray(report.tables) ? report.tables : []);
+    } catch (cause) {
+      if (!cancelled.current) setMessage(`Verification completed, but table details could not be loaded: ${String(cause)}`);
     }
   }
 
-  const running =
-    status?.state === "running" || status?.state === "queued";
-
-  const finished =
-    status !== null &&
-    !running &&
-    status.state !== "error";
-
-  function downloadUrl(format: string) {
-    return `/api/automation/table-verification?action=download&job=${jobId}&format=${format}`;
+  async function poll(session: Session, job: string) {
+    if (cancelled.current) return;
+    try {
+      const response = await fetch(endpoint(session, "status", job), {
+        headers: authHeaders(session), cache: "no-store",
+      });
+      const next = await readJson<Status>(response);
+      if (cancelled.current) return;
+      setStatus(next);
+      setMessage(next.message ?? "");
+      if (next.state === "running") {
+        timeout.current = setTimeout(() => void poll(session, job), 1300);
+      } else if (next.state === "done") {
+        setRunning(false);
+        await fetchReport(session, job);
+      } else if (next.state === "error") {
+        setRunning(false);
+        setError(next.message ?? "Verification failed.");
+      } else {
+        throw new Error("Unexpected verification state.");
+      }
+    } catch (cause) {
+      if (!cancelled.current) {
+        setRunning(false);
+        setError(cause instanceof Error ? cause.message : "Could not check verification status.");
+      }
+    }
   }
 
+  async function runVerification() {
+    if (!word || !excel || running) return;
+    if (!/\.(doc|docx)$/i.test(word.name) || !/\.(xlsx|xlsm)$/i.test(excel.name)) {
+      setError("Please select a Word .doc/.docx and an Excel .xlsx/.xlsm file.");
+      return;
+    }
+    if (word.size + excel.size > 80 * 1024 * 1024) {
+      setError("The combined file size must be under 80 MB.");
+      return;
+    }
+    setRunning(true); setError(""); setStatus(null); setTables(null);
+    setMessage("Authorizing your verification..."); current.current = null;
+    if (timeout.current) clearTimeout(timeout.current);
+    try {
+      const ticketResponse = await fetch("/api/automation/table-verification/session", { method: "POST", cache: "no-store" });
+      const session = await readJson<Session>(ticketResponse);
+      const data = new FormData(); data.append("word", word); data.append("excel", excel);
+      setMessage("Uploading your Word and Excel files...");
+      const upload = await fetch(endpoint(session, "run"), {
+        method: "POST", body: data, headers: authHeaders(session), cache: "no-store",
+      });
+      const result = await readJson<{ job: string }>(upload);
+      if (!result.job) throw new Error("The verification server did not return a job ID.");
+      current.current = { session, job: result.job };
+      setMessage("Comparing Word tables with Excel...");
+      await poll(session, result.job);
+    } catch (cause) {
+      setRunning(false);
+      setError(cause instanceof Error ? cause.message : "Could not start verification.");
+    }
+  }
 
-const matchingTables =
-  reportTables?.filter(
-    (table) => table.status === "FULL" && table.mismatches === 0
-  ) ?? [];
+  async function download(format: DownloadFormat) {
+    if (!current.current) return;
+    const { session, job } = current.current;
+    try {
+      const response = await fetch(endpoint(session, "download", job, format), {
+        headers: authHeaders(session), cache: "no-store",
+      });
+      if (!response.ok) {
+        await readJson(response);
+        throw new Error("Report could not be downloaded.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `table-verification.${format}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Report download failed.");
+    }
+  }
 
-const discrepantTables =
-  reportTables?.filter(
-    (table) => table.mismatches > 0
-  ) ?? [];
-
-const unverifiedTables =
-  reportTables?.filter(
-    (table) => table.status === "UNVERIFIED"
-  ) ?? [];
-
-const partialTables =
-  reportTables?.filter(
-    (table) => table.status === "PARTIAL"
-  ) ?? [];
-
+  const summary = status?.summary;
+  const matching = summary?.matching_tables ?? tables?.filter(t => t.status === "FULL" && t.mismatches === 0).length ?? 0;
+  const differing = summary?.tables_with_discrepancies ?? tables?.filter(t => t.mismatches > 0).length ?? 0;
+  const unverified = summary?.unverified ?? tables?.filter(t => t.status === "UNVERIFIED").length ?? 0;
+  const attention = tables?.filter(t => t.mismatches > 0) ?? [];
+  const completed = status?.state === "done";
 
   return (
-    <div className="flex flex-col gap-6">
-      <form
-        onSubmit={handleSubmit}
-        className="rounded-lg border border-slate-200 bg-white p-6"
-      >
-        <h2 className="text-base font-semibold text-slate-900">
-          Upload Files
-        </h2>
-
-        <p className="mt-2 text-sm text-slate-600">
-          Select one Word appraisal report and one Excel source workbook.
-          Original files will not be modified.
-        </p>
-
-        <div className="mt-6 grid gap-6 md:grid-cols-2">
-          <div>
-            <label
-              htmlFor="word-file"
-              className="mb-2 block text-sm font-medium text-slate-700"
-            >
-              Word Appraisal Report
-            </label>
-
-            <div className="flex flex-wrap items-center gap-3">
-  <input
-    id="word-file"
-    type="file"
-    accept=".doc,.docx"
-    required
-    onChange={(e) => setWord(e.target.files?.[0] ?? null)}
-    className="peer sr-only"
-  />
-
-  <label
-    htmlFor="word-file"
-    className="inline-flex cursor-pointer items-center rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-slate-800 peer-focus-visible:ring-2 peer-focus-visible:ring-slate-500 peer-focus-visible:ring-offset-2"
-  >
-    Choose Word File
-  </label>
-
-  <span className="break-all text-sm text-slate-600">
-    {word?.name ?? "No file selected"}
-  </span>
-</div>
-            <p className="mt-1 text-xs text-slate-500">
-              Supported: .doc, .docx
-            </p>
-          </div>
-
-          <div>
-            <label
-              htmlFor="excel-file"
-              className="mb-2 block text-sm font-medium text-slate-700"
-            >
-              Excel Source Workbook
-            </label>
-
-            <div className="flex flex-wrap items-center gap-3">
-  <input
-    id="excel-file"
-    type="file"
-    accept=".xlsx,.xlsm"
-    required
-    onChange={(e) => setExcel(e.target.files?.[0] ?? null)}
-    className="peer sr-only"
-  />
-
-  <label
-    htmlFor="excel-file"
-    className="inline-flex cursor-pointer items-center rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-slate-800 peer-focus-visible:ring-2 peer-focus-visible:ring-slate-500 peer-focus-visible:ring-offset-2"
-  >
-    Choose Excel File
-  </label>
-
-  <span className="break-all text-sm text-slate-600">
-    {excel?.name ?? "No file selected"}
-  </span>
-</div>
-            <p className="mt-1 text-xs text-slate-500">
-              Supported: .xlsx, .xlsm
-            </p>
-          </div>
+    <div className="space-y-6">
+      <div className="rounded-lg border border-slate-200 bg-white p-6">
+        <h2 className="mb-2 text-base font-semibold text-slate-950">Upload files</h2>
+        <p className="mb-5 text-sm text-slate-600">Compare Word report tables with the Excel workbook used to prepare them. Narrative text is not reviewed.</p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="block text-sm font-medium text-slate-800">
+            Word report (.doc or .docx)
+            <input aria-label="Word report" type="file" accept=".doc,.docx" disabled={running}
+              onChange={e => setWord(e.target.files?.[0] ?? null)}
+              className="mt-2 block w-full rounded-md border border-slate-300 p-3 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2" />
+            {word && <span className="mt-1 block truncate text-xs text-slate-600">{word.name}</span>}
+          </label>
+          <label className="block text-sm font-medium text-slate-800">
+            Excel workbook (.xlsx or .xlsm)
+            <input aria-label="Excel workbook" type="file" accept=".xlsx,.xlsm" disabled={running}
+              onChange={e => setExcel(e.target.files?.[0] ?? null)}
+              className="mt-2 block w-full rounded-md border border-slate-300 p-3 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2" />
+            {excel && <span className="mt-1 block truncate text-xs text-slate-600">{excel.name}</span>}
+          </label>
         </div>
-
-        <button
-          type="submit"
-          disabled={!word || !excel || submitting || running}
-          className="mt-6 rounded-md bg-slate-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {submitting
-            ? "Uploading..."
-            : running
-              ? "Verifying..."
-              : "Run Table Verification"}
+        <button type="button" disabled={!word || !excel || running} onClick={() => void runVerification()}
+          className="mt-5 rounded-md bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">
+          {running ? "Verifying..." : "Run Table Verification"}
         </button>
-      </form>
-
-      {(jobId || error) && (
-        <section className="rounded-lg border border-slate-200 bg-white p-6">
-          <h2 className="text-base font-semibold text-slate-900">
-            Verification Results
-          </h2>
-
-          {running && (
-            <p className="mt-3 text-sm text-slate-600">
-              {status?.message || "Comparing Word and Excel tables..."}
-            </p>
-          )}
-
-          {error && (
-            <p role="alert" className="mt-3 text-sm text-red-700">
-              {error}
-            </p>
-          )}
-
-          {finished && !error && (
-            <>
-              <p className="mt-3 text-sm font-medium text-slate-900">
-                Verification completed.
-              </p>
-
-              <p className="mt-1 text-sm text-slate-600">
-                Tables without a reliable Excel match remain unverified.
-              </p>
-
-
-{reportTables ? (
-  <>
-    <div className="mt-5 grid gap-3 sm:grid-cols-3">
-      {[
-        { label: "Matching Tables", count: matchingTables.length },
-        { label: "Tables with Discrepancies", count: discrepantTables.length },
-        { label: "Not Verified", count: unverifiedTables.length },
-      ].map((item) => (
-        <div key={item.label} className="rounded-md bg-slate-50 p-4">
-          <p className="text-xs text-slate-600">{item.label}</p>
-          <p className="mt-2 text-2xl font-semibold text-slate-900">
-            {item.count}
-          </p>
-        </div>
-      ))}
-    </div>
-
-    {partialTables.length > 0 && (
-      <p className="mt-4 text-sm text-amber-700">
-        {partialTables.length} table(s) were only partially compared.
-      </p>
-    )}
-
-    {discrepantTables.length > 0 && (
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold text-red-700">
-          Tables Requiring Attention
-        </h3>
-
-        <div className="mt-3 divide-y divide-slate-200 rounded-md border border-slate-200">
-          {discrepantTables.map((table) => (
-            <div key={table.id} className="flex gap-3 p-3 text-sm">
-              <span className="font-semibold text-red-700">
-                {table.id}
-              </span>
-              <span className="text-slate-800">
-                {table.title}
-              </span>
-            </div>
-          ))}
-        </div>
+        {message && <p aria-live="polite" className="mt-3 text-sm text-slate-600">{message}</p>}
+        {error && <p role="alert" className="mt-3 text-sm font-medium text-red-700">{error}</p>}
       </div>
-    )}
-  </>
-) : (
-  <p className="mt-4 text-sm text-slate-500">
-    Loading table-level results...
-  </p>
-)}
 
-
-              <div className="mt-6 flex flex-wrap gap-3">
-                <a
-                  href={downloadUrl("html")}
-                  className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
-                >
-                  Download Detailed Report
-                </a>
-
-                <a
-                  href={downloadUrl("tables.csv")}
-                  className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700"
-                >
-                  Download Table Results
-                </a>
-
-                <a
-                  href={downloadUrl("json")}
-                  className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700"
-                >
-                  Download JSON
-                </a>
+      {completed && (
+        <div className="rounded-lg border border-slate-200 bg-white p-6">
+          <h2 className="mb-2 text-base font-semibold text-slate-950">Verification Results</h2>
+          <p className="text-sm text-slate-900">Verification completed.</p>
+          <p className="mb-5 text-sm text-slate-600">Tables without a reliable Excel match remain unverified.</p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {([ ["Matching Tables", matching], ["Tables with Discrepancies", differing], ["Not Verified", unverified] ] as const).map(([label, value]) => (
+              <div key={label} className="rounded-md bg-slate-50 px-4 py-5">
+                <div className="text-xs text-slate-600">{label}</div>
+                <div className="mt-2 text-2xl font-semibold text-slate-950">{value}</div>
               </div>
-            </>
+            ))}
+          </div>
+          {attention.length > 0 && (
+            <div className="mt-6">
+              <h3 className="mb-3 text-sm font-semibold text-red-700">Tables Requiring Attention</h3>
+              <div className="overflow-hidden rounded-md border border-slate-200">
+                {attention.map(table => (
+                  <div key={table.id} className="flex gap-3 border-b border-slate-200 px-3 py-3 text-sm last:border-b-0">
+                    <strong className="text-red-700">{table.id}</strong>
+                    <span className="text-slate-900">{table.title}</span>
+                    <span className="ml-auto whitespace-nowrap text-slate-600">{table.mismatches} difference{table.mismatches === 1 ? "" : "s"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
-        </section>
+          <div className="mt-6 flex flex-wrap gap-2">
+            <button type="button" onClick={() => void download("html")}
+              className="rounded-md bg-slate-950 px-4 py-3 text-sm font-semibold text-white">Download Detailed Report</button>
+            <button type="button" onClick={() => void download("tables.csv")}
+              className="rounded-md border border-slate-300 px-4 py-3 text-sm font-medium text-slate-950">Download Table Results</button>
+            <button type="button" onClick={() => void download("json")}
+              className="rounded-md border border-slate-300 px-4 py-3 text-sm font-medium text-slate-950">Download JSON</button>
+            <button type="button" onClick={() => void download("csv")}
+              className="rounded-md border border-slate-300 px-4 py-3 text-sm font-medium text-slate-950">Download Discrepancies CSV</button>
+          </div>
+          <p className="mt-3 text-xs text-slate-500">Generated reports are temporary and may become unavailable after one hour or a backend restart. Download anything you need to keep.</p>
+        </div>
       )}
     </div>
   );
