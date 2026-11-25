@@ -2,7 +2,7 @@ services:
   - type: web
     name: keystone-table-verification
     runtime: docker
-    plan: 1c-2g
+    plan: free
     numInstances: 1
     dockerfilePath: ./tools/table-verification/Dockerfile
     dockerContext: ./tools/table-verification
@@ -15,3 +15,4 @@ services:
         sync: false
       - key: KSTV_MAX_UPLOAD_BYTES
         value: "89128960"
+
