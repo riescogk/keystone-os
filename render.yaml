@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: keystone-table-verification
+    runtime: docker
+    plan: free
+    numInstances: 1
+    dockerfilePath: ./tools/table-verification/Dockerfile
+    dockerContext: ./tools/table-verification
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: KSTV_SHARED_SECRET
+        sync: false
+      - key: KSTV_ALLOWED_ORIGINS
+        sync: false
+      - key: KSTV_MAX_UPLOAD_BYTES
+        value: "89128960"
+

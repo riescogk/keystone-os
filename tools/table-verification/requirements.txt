@@ -1,0 +1,8 @@
+# Core engine: Python 3.10+ standard library.
+# Needed to tell table screenshots from photos/maps/charts (without it every bitmap is listed "check visually"):
+Pillow>=10
+# OPTIONAL - read the text of bitmap tables (needs the Tesseract program installed on the machine):
+#   pytesseract>=0.3.10
+# Tests:
+pytest>=8
+openpyxl>=3.1      # used only by tests/test_synthetic.py to build a small fixture workbook
